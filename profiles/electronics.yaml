@@ -1,0 +1,21 @@
+key: electronics
+display_name: Electronics & Communication Engineering
+sandbox_image_tag: practice-forge-sandbox-electronics:latest
+
+solver_libs: [numpy, scipy, sympy, lcapy, python-control, matplotlib]
+ml_libs: [scikit-learn, pandas]
+
+allowed_extension_types:
+  - surrogate_model
+  - anomaly_detection
+  - design_optimisation
+  - sensitivity_analysis
+  - uncertainty_quantification
+
+topics:
+  - Network Analysis
+  - Signals & Systems
+  - Electromagnetic Theory
+  - Analog Circuits
+  - Digital Electronics
+  - Communications

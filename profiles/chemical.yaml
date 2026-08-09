@@ -1,0 +1,22 @@
+key: chemical
+display_name: Chemical Engineering
+sandbox_image_tag: practice-forge-sandbox-chemical:latest
+
+solver_libs: [pint, numpy, scipy, CoolProp, thermo, matplotlib]
+ml_libs: [scikit-learn, pandas, filterpy]
+
+allowed_extension_types:
+  - surrogate_model
+  - digital_twin
+  - anomaly_detection
+  - design_optimisation
+  - sensitivity_analysis
+  - uncertainty_quantification
+  - physics_informed
+
+topics:
+  - Fluid Flow
+  - Heat Transfer
+  - Mass Transfer
+  - Reaction Engineering
+  - Thermodynamics

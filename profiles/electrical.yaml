@@ -1,0 +1,21 @@
+key: electrical
+display_name: Electrical Engineering
+sandbox_image_tag: practice-forge-sandbox-electrical:latest
+
+solver_libs: [pint, numpy, scipy, sympy, lcapy, python-control, matplotlib]
+ml_libs: [scikit-learn, pandas, filterpy]
+
+allowed_extension_types:
+  - surrogate_model
+  - digital_twin
+  - anomaly_detection
+  - design_optimisation
+  - sensitivity_analysis
+  - uncertainty_quantification
+
+topics:
+  - Circuit Theory
+  - Electrical Machines
+  - Power Systems
+  - Control Systems
+  - Electrical Measurements

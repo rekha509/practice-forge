@@ -1,0 +1,24 @@
+key: mechanical
+display_name: Mechanical Engineering
+sandbox_image_tag: practice-forge-sandbox-mechanical:latest
+
+solver_libs: [pint, numpy, scipy, sympy, CoolProp, matplotlib]
+ml_libs: [scikit-learn, pandas, filterpy, torch]
+
+allowed_extension_types:
+  - surrogate_model
+  - digital_twin
+  - anomaly_detection
+  - design_optimisation
+  - sensitivity_analysis
+  - uncertainty_quantification
+  - physics_informed
+
+topics:
+  - Strength of Materials
+  - Thermodynamics
+  - Fluid Mechanics
+  - Theory of Machines
+  - Machine Design
+  - Heat & Mass Transfer
+  - IC Engines

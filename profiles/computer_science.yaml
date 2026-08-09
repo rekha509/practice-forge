@@ -1,0 +1,19 @@
+key: computer_science
+display_name: Computer Science & Engineering
+sandbox_image_tag: practice-forge-sandbox-computer-science:latest
+
+solver_libs: [numpy, sympy, networkx, scipy, matplotlib]
+ml_libs: [scikit-learn, pandas]
+
+allowed_extension_types:
+  - surrogate_model
+  - sensitivity_analysis
+  - uncertainty_quantification
+
+topics:
+  - Algorithms
+  - Data Structures
+  - Computer Networks
+  - Operating Systems
+  - DBMS
+  - Digital Logic

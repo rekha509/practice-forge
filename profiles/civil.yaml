@@ -1,0 +1,23 @@
+key: civil
+display_name: Civil Engineering
+sandbox_image_tag: practice-forge-sandbox-civil:latest
+
+solver_libs: [pint, numpy, scipy, sympy, anastruct, matplotlib]
+ml_libs: [scikit-learn, pandas, filterpy]
+
+allowed_extension_types:
+  - surrogate_model
+  - digital_twin
+  - anomaly_detection
+  - design_optimisation
+  - sensitivity_analysis
+  - uncertainty_quantification
+
+topics:
+  - Strength of Materials
+  - Structural Analysis
+  - RCC Design
+  - Geotechnical Engineering
+  - Fluid Mechanics
+  - Surveying
+  - Transportation Engineering

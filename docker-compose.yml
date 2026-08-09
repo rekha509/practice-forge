@@ -1,0 +1,92 @@
+name: practice-forge
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: practice_forge
+      POSTGRES_PASSWORD: practice_forge
+      POSTGRES_DB: practice_forge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U practice_forge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Builds the shared sandbox base image (see docker/sandbox/base.Dockerfile)
+  # into the local image store so sandbox-runner can spawn containers FROM it.
+  # Exits immediately by design — nothing depends on it staying up.
+  sandbox-base:
+    build:
+      context: .
+      dockerfile: docker/sandbox/base.Dockerfile
+    image: practice-forge-sandbox-base:latest
+    command: ["python3", "--version"]
+
+  # The only service with docker.sock mounted. Runs untrusted generated code
+  # in throwaway containers FROM practice-forge-sandbox-base (see
+  # src/practice_forge/sandbox/runner.py). The worker calls this over HTTP
+  # instead of touching the host daemon itself.
+  sandbox-runner:
+    build:
+      context: .
+      dockerfile: sandbox_runner/Dockerfile
+    env_file: .env
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - sandbox-base
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    env_file: .env
+    environment:
+      # .env's DATABASE_URL/REDIS_URL are host-oriented (localhost) for
+      # Alembic/pf run from the host; containers must use compose DNS names.
+      DATABASE_URL: postgresql+psycopg://practice_forge:practice_forge@db:5432/practice_forge
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://practice_forge:practice_forge@db:5432/practice_forge
+      REDIS_URL: redis://redis:6379/0
+      SANDBOX_RUNNER_URL: http://sandbox-runner:9000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_started
+
+volumes:
+  pgdata:
