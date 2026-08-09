@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import getpass
+import logging
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,36 @@ from practice_forge.structure.structure import run_structure
 app = typer.Typer(name="pf", help="Generate execution-verified engineering practice problem sets.")
 profiles_app = typer.Typer(help="Inspect discipline profiles.")
 app.add_typer(profiles_app, name="profiles")
+
+_LLM_USAGE_LOG_PATH = Path(__file__).resolve().parents[3] / "data" / "llm_usage.log"
+
+
+def _configure_logging() -> None:
+    """Every real `pf` command that calls the LLM emits one structured JSON
+    line per request via `practice_forge.llm.client`'s logger
+    (job_id/stage/provider/model/tokens/cost/requests_used_today). Without
+    this, that logger's INFO records are silently dropped (root default is
+    WARNING) — found live: most of this session's real per-stage token
+    counts were never durably captured because of exactly this gap. Two
+    sinks: stderr for interactive visibility, and an appended JSONL file so
+    a multi-day, multi-invocation ingest can be aggregated for a usage
+    report afterward."""
+    logging.basicConfig(level=logging.WARNING)
+    llm_logger = logging.getLogger("practice_forge.llm")
+    llm_logger.setLevel(logging.INFO)
+    llm_logger.propagate = False
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    llm_logger.addHandler(stream_handler)
+
+    _LLM_USAGE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(_LLM_USAGE_LOG_PATH, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(message)s"))
+    llm_logger.addHandler(file_handler)
+
+
+_configure_logging()
 
 
 @profiles_app.command("list")

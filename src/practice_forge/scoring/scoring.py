@@ -15,6 +15,7 @@ out of the deterministic gate rather than guessed.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -30,6 +31,16 @@ from practice_forge.models.scoring import composite_score
 from practice_forge.profiles.loader import load_profile
 
 _SCORING_PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "s6_candidate_scoring.md"
+
+# A single unbatched call for a whole book (as this stage originally did)
+# breaks at real book scale — found live while sizing the 700-page
+# projection, not from a test. 15 rather than S3's 20: each item carries a
+# scoring_rationale dict with free-text per axis, heavier than S3's schema.
+BATCH_SIZE = 15
+
+
+def _chunked(items: Sequence[ConceptCardORM], size: int) -> list[Sequence[ConceptCardORM]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 class ScoreBatchItem(BaseModel):
@@ -84,58 +95,60 @@ def run_scoring(session: Session, book_id: uuid.UUID, job_id: str) -> dict[str, 
         return {"scored": 0}
 
     client = LLMClient()
-    concepts_block = "\n---\n".join(
-        f"[index {i}]\nName: {c.name}\nMethod: {c.method_tag}\n"
-        f"Governing equations: {c.governing_equations_latex}\n"
-        f"Given dimensions: {c.given_dimensions}\nSolve for: {c.solve_for_dimension}\n"
-        f"Assumptions: {c.assumptions}"
-        for i, c in enumerate(cards)
-    )
-    prompt = _SCORING_PROMPT_PATH.read_text(encoding="utf-8").replace(
-        "{concepts_block}", concepts_block
-    )
-
-    items, _response = call_batch(
-        client,
-        stage="s6_scoring",
-        prompt=prompt,
-        job_id=job_id,
-        item_model=ScoreBatchItem,
-        expected_count=len(cards),
-        max_tokens=6144,
-    )
-
     scored = 0
-    for card, item in zip(cards, items, strict=True):
-        if item is None:
-            continue
-        composite = composite_score(
-            item.pedagogical_value,
-            item.computational_suitability,
-            item.self_containedness,
-            item.syllabus_centrality,
-            item.verifiability,
-            item.ml_extension_potential,
+
+    for batch_no, batch in enumerate(_chunked(cards, BATCH_SIZE)):
+        concepts_block = "\n---\n".join(
+            f"[index {i}]\nName: {c.name}\nMethod: {c.method_tag}\n"
+            f"Governing equations: {c.governing_equations_latex}\n"
+            f"Given dimensions: {c.given_dimensions}\nSolve for: {c.solve_for_dimension}\n"
+            f"Assumptions: {c.assumptions}"
+            for i, c in enumerate(batch)
         )
-        session.add(
-            CandidateScoreORM(
-                id=uuid.uuid4(),
-                concept_card_id=card.id,
-                pedagogical_value=item.pedagogical_value,
-                computational_suitability=item.computational_suitability,
-                self_containedness=item.self_containedness,
-                syllabus_centrality=item.syllabus_centrality,
-                verifiability=item.verifiability,
-                ml_extension_potential=item.ml_extension_potential,
-                eligible_extension_types=[
-                    e.value for e in eligible_extension_types_for(card, allowed)
-                ],
-                composite_score=composite,
-                difficulty=DifficultyLevel(item.difficulty),
-                scoring_rationale=item.scoring_rationale,
+        prompt = _SCORING_PROMPT_PATH.read_text(encoding="utf-8").replace(
+            "{concepts_block}", concepts_block
+        )
+
+        items, _response = call_batch(
+            client,
+            stage="s6_scoring",
+            prompt=prompt,
+            job_id=f"{job_id}-batch{batch_no}",
+            item_model=ScoreBatchItem,
+            expected_count=len(batch),
+            max_tokens=6144,
+        )
+
+        for card, item in zip(batch, items, strict=True):
+            if item is None:
+                continue
+            composite = composite_score(
+                item.pedagogical_value,
+                item.computational_suitability,
+                item.self_containedness,
+                item.syllabus_centrality,
+                item.verifiability,
+                item.ml_extension_potential,
             )
-        )
-        scored += 1
+            session.add(
+                CandidateScoreORM(
+                    id=uuid.uuid4(),
+                    concept_card_id=card.id,
+                    pedagogical_value=item.pedagogical_value,
+                    computational_suitability=item.computational_suitability,
+                    self_containedness=item.self_containedness,
+                    syllabus_centrality=item.syllabus_centrality,
+                    verifiability=item.verifiability,
+                    ml_extension_potential=item.ml_extension_potential,
+                    eligible_extension_types=[
+                        e.value for e in eligible_extension_types_for(card, allowed)
+                    ],
+                    composite_score=composite,
+                    difficulty=DifficultyLevel(item.difficulty),
+                    scoring_rationale=item.scoring_rationale,
+                )
+            )
+            scored += 1
 
     session.flush()
     return {"scored": scored, "candidates": len(cards)}

@@ -14,6 +14,7 @@ figure-dependent exclusions (docs/adr/0007) never reach this stage.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,14 @@ from practice_forge.llm.batching import call_batch
 from practice_forge.llm.client import LLMClient
 
 CLUSTER_COSINE_THRESHOLD = 0.92
+
+# Smaller than S3's BATCH_SIZE=20: this stage's per-item schema carries far
+# more free-text fields (equations, assumptions, pitfalls, solution
+# strategy) than S3's confirm pass, so the same item count risks a bigger
+# batch response than max_tokens allows. A single unbatched call for a
+# whole book (as this stage originally did) breaks at real book scale —
+# found live while sizing the 700-page projection, not from a test.
+BATCH_SIZE = 10
 
 _DISTILLATION_PROMPT_PATH = (
     Path(__file__).resolve().parents[3] / "prompts" / "s5_concept_distillation.md"
@@ -51,6 +60,12 @@ class DistillationBatchItem(BaseModel):
     has_degradation_mode: bool = False
     has_design_tradeoff: bool = False
     has_tolerance_spec: bool = False
+
+
+def _chunked(
+    items: Sequence[SourceProblemORM], size: int
+) -> list[Sequence[SourceProblemORM]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -82,76 +97,76 @@ def run_concept_distillation(
         return {"distilled": 0, "parse_failures": 0, "clusters": 0}
 
     client = llm_client or LLMClient()
-
-    problems_block = "\n---\n".join(
-        f"[index {i}]\nStatement: {p.statement_md}\n"
-        f"Given: {p.given}\nFind: {p.find}\nAnswer: {p.final_answer}"
-        for i, p in enumerate(problems)
-    )
-    # .replace(), not .format(): problem text can itself contain literal
-    # `{`/`}` (LaTeX, OCR artifacts) that .format() misparses as
-    # placeholders — this exact failure happened live on this book's
-    # content (see detection.py's identical fix).
-    prompt = _DISTILLATION_PROMPT_PATH.read_text(encoding="utf-8").replace(
-        "{problems_block}", problems_block
-    )
-
-    items, _response = call_batch(
-        client,
-        stage="s5_distillation",
-        prompt=prompt,
-        job_id=job_id,
-        item_model=DistillationBatchItem,
-        expected_count=len(problems),
-        max_tokens=8192,
-    )
-
     settings = get_settings()
     cards: list[ConceptCardORM] = []
     parse_failures = 0
+    texts_to_embed: list[str] = []
 
-    texts_to_embed = []
-    for problem, item in zip(problems, items, strict=True):
-        if item is None:
-            continue
-
-        canonical_reprs = []
-        for eq in item.governing_equations_latex:
-            repr_str = canonicalize_equation(eq)
-            if repr_str.startswith("UNPARSED::"):
-                parse_failures += 1
-            canonical_reprs.append(repr_str)
-
-        fingerprint = concept_fingerprint(
-            canonical_reprs, item.given_dimensions, item.solve_for_dimension, item.method_tag
+    for batch_no, batch in enumerate(_chunked(problems, BATCH_SIZE)):
+        problems_block = "\n---\n".join(
+            f"[index {i}]\nStatement: {p.statement_md}\n"
+            f"Given: {p.given}\nFind: {p.find}\nAnswer: {p.final_answer}"
+            for i, p in enumerate(batch)
+        )
+        # .replace(), not .format(): problem text can itself contain literal
+        # `{`/`}` (LaTeX, OCR artifacts) that .format() misparses as
+        # placeholders — this exact failure happened live on this book's
+        # content (see detection.py's identical fix).
+        prompt = _DISTILLATION_PROMPT_PATH.read_text(encoding="utf-8").replace(
+            "{problems_block}", problems_block
         )
 
-        embed_text = f"{item.name}. {item.solution_strategy}. Method: {item.method_tag}"
-        texts_to_embed.append(embed_text)
-
-        card = ConceptCardORM(
-            id=uuid.uuid4(),
-            book_id=book_id,
-            section_id=problem.section_id,
-            name=item.name,
-            topic_node_ids=[],
-            governing_equations_latex=item.governing_equations_latex,
-            canonical_equation_srepr=canonical_reprs,
-            assumptions=item.assumptions,
-            solution_strategy=item.solution_strategy,
-            typical_pitfalls=item.typical_pitfalls,
-            given_dimensions=item.given_dimensions,
-            solve_for_dimension=item.solve_for_dimension,
-            method_tag=item.method_tag,
-            continuous_param_count=item.continuous_param_count,
-            has_degradation_mode=item.has_degradation_mode,
-            has_design_tradeoff=item.has_design_tradeoff,
-            has_tolerance_spec=item.has_tolerance_spec,
-            concept_fingerprint=fingerprint,
-            embedding=[0.0] * 3072,  # placeholder, filled in below
-            source_pages=[problem.page_no],
+        items, _response = call_batch(
+            client,
+            stage="s5_distillation",
+            prompt=prompt,
+            job_id=f"{job_id}-batch{batch_no}",
+            item_model=DistillationBatchItem,
+            expected_count=len(batch),
+            max_tokens=8192,
         )
-        cards.append(card)
+
+        for problem, item in zip(batch, items, strict=True):
+            if item is None:
+                continue
+
+            canonical_reprs = []
+            for eq in item.governing_equations_latex:
+                repr_str = canonicalize_equation(eq)
+                if repr_str.startswith("UNPARSED::"):
+                    parse_failures += 1
+                canonical_reprs.append(repr_str)
+
+            fingerprint = concept_fingerprint(
+                canonical_reprs, item.given_dimensions, item.solve_for_dimension, item.method_tag
+            )
+
+            embed_text = f"{item.name}. {item.solution_strategy}. Method: {item.method_tag}"
+            texts_to_embed.append(embed_text)
+
+            card = ConceptCardORM(
+                id=uuid.uuid4(),
+                book_id=book_id,
+                section_id=problem.section_id,
+                name=item.name,
+                topic_node_ids=[],
+                governing_equations_latex=item.governing_equations_latex,
+                canonical_equation_srepr=canonical_reprs,
+                assumptions=item.assumptions,
+                solution_strategy=item.solution_strategy,
+                typical_pitfalls=item.typical_pitfalls,
+                given_dimensions=item.given_dimensions,
+                solve_for_dimension=item.solve_for_dimension,
+                method_tag=item.method_tag,
+                continuous_param_count=item.continuous_param_count,
+                has_degradation_mode=item.has_degradation_mode,
+                has_design_tradeoff=item.has_design_tradeoff,
+                has_tolerance_spec=item.has_tolerance_spec,
+                concept_fingerprint=fingerprint,
+                embedding=[0.0] * 3072,  # placeholder, filled in below
+                source_pages=[problem.page_no],
+            )
+            cards.append(card)
 
     embeddings = embed_texts(settings.gemini_api_key, texts_to_embed)
     for card, embedding in zip(cards, embeddings, strict=True):
