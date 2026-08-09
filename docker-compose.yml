@@ -49,7 +49,11 @@ services:
     ports:
       - "9000:9000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Linux default is a bind mount of the Unix socket. Docker Desktop on
+      # Windows exposes the engine over a named pipe instead — override via
+      # DOCKER_SOCKET_MOUNT in .env, e.g.
+      # DOCKER_SOCKET_MOUNT=//./pipe/docker_engine://./pipe/docker_engine
+      - ${DOCKER_SOCKET_MOUNT:-/var/run/docker.sock:/var/run/docker.sock}
     depends_on:
       - sandbox-base
 

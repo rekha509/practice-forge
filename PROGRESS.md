@@ -1,37 +1,29 @@
-## Current Phase: 1 — Scaffold
-## Status: blocked
+## Current Phase: 2 — Ingest + book dedup
+## Status: in_progress
 
 ## Completed
-- [x] Pydantic domain models for the full data model spec — `src/practice_forge/models/{enums,discipline,course,book,figure,problem,concept,scoring,variant,problem_set}.py`
-- [x] Six discipline profiles (declarative, not branching code) — `profiles/{mechanical,civil,electrical,electronics,chemical,computer_science}.yaml`
-- [x] Profile loader/validator — `src/practice_forge/profiles/loader.py`
-- [x] Docker sandbox runner: network-disabled, 1-CPU quota + wall-clock timeout, memory-capped with no swap, read-only rootfs + tmpfs `/tmp`, dropped caps, non-root — `src/practice_forge/sandbox/runner.py`, `docker/sandbox/base.Dockerfile`
-- [x] `sandbox-runner` HTTP microservice wrapping the runner (only container with `docker.sock` mounted, see `docs/adr/0002`) — `sandbox_runner/{main.py,Dockerfile}`
-- [x] `docker-compose.yml` — db (Postgres+pgvector), redis, sandbox-base (image build), sandbox-runner, api, worker
-- [x] Minimal `api` (FastAPI) and `worker` (Celery) stubs so the compose stack has something real to run — `api/main.py`, `worker/celery_app.py`
-- [x] SQLAlchemy ORM mirroring every entity, including the partial-unique-index no-repeat guarantee (see `docs/adr/0003`) — `src/practice_forge/db/{base,models}.py`
-- [x] Alembic wired to `Settings.database_url`, first migration creating the full schema — `alembic.ini`, `migrations/env.py`, `migrations/versions/0001_initial_schema.py`
-- [x] CLI skeleton (`pf`) — `profiles list`/`show` fully working now, `ingest`/`generate` stubbed with clear "not implemented, see PROGRESS.md" — `src/practice_forge/cli/main.py`
-- [x] `tests/test_sandbox.py` written (network block, CPU-timeout kill, OOM kill, read-only-FS-except-tmp, happy path) — **not yet run**, see Blocked On
-- [x] README, ADRs 0001-0003, `.env.example`/`.env`, `.gitignore`, `pyproject.toml`
+- [x] Phase 1 (Scaffold) — models, discipline profiles, sandbox runner, docker-compose, ORM/Alembic, CLI skeleton, docs. **Gate GREEN**: `docker compose up -d && pytest tests/test_sandbox.py -v` → 5 passed. See commits `4ccf80e`, and the socket-mount + gate-verification commit that follows this file.
+- [x] Made `sandbox-runner`'s docker.sock mount configurable (`DOCKER_SOCKET_MOUNT` env var, Linux default `/var/run/docker.sock:/var/run/docker.sock`) so the same compose file works on Linux and on this Windows/Docker-Desktop host (`//./pipe/docker_engine://./pipe/docker_engine`) — `docker-compose.yml`, `.env.example`, `.env`.
+- [x] Host dev tooling runs on Python 3.11 (`.venv/`, gitignored) via `pip install --ignore-requires-python --no-deps -e .` plus the handful of packages `tests/test_sandbox.py` actually imports (`pytest`, `docker`, `pyyaml`, `pydantic`, `pydantic-settings`). No Python 3.12 interpreter is installed on this host. This does **not** affect correctness of anything shipped: the sandbox image, and every future worker/api container, still run true `python:3.12-slim` per the fixed TECH STACK — only ad hoc host-side pytest/alembic/pf runs use 3.11. Documented as a decision below; revisit if a 3.12 interpreter becomes available.
 
 ## Next Immediate Task
-Once Docker Desktop is installed and `docker --version` / `docker ps` succeed from this same shell, run: `pip install -e ".[dev]"` then `docker compose up -d && pytest tests/test_sandbox.py -v`. Fix whatever fails (likely candidates: Windows Docker socket path differences for `sandbox-runner`'s `/var/run/docker.sock` mount, or a docker-py `nano_cpus`/`pids_limit` support quirk on the installed Docker Desktop version) and re-run until all 5 tests pass, then mark Phase 1 complete and start Phase 2 (S1 ingest + book dedup, `pf ingest` command).
+Implement Phase 2 (S1 ingest + book dedup): `src/practice_forge/ingest/` with (a) SHA-256 exact-file dedup against `books.file_sha256`, (b) marker-pdf extraction to per-page markdown with a MinHash-over-shingles fallback dedup path (title/author/edition normalization + Jaccard >= 0.8 + page count within 2 -> `canonical_book_id`), (c) `Page` row persistence, resumable/idempotent re-runs. Wire `pf ingest <path>` to it for real (currently stubbed). Need a real `tests/fixtures/sample.pdf` first — a small synthetic multi-page PDF is fine, it doesn't need real textbook content for the dedup-logic gate. Gate: `pf ingest tests/fixtures/sample.pdf` run twice produces one `Book` row and logs a dedup hit on the second (`pytest tests/test_ingest.py`, mocking marker-pdf and the LLM calls per the testing standard — no real Anthropic call in the unit test).
 
 ## Decisions Made
 - Repo lives at `C:\Users\mamid\projects\practice-forge`, separate from the home directory — user's own choice when asked.
-- Sandbox execution isolated behind a dedicated `sandbox-runner` HTTP service rather than mounting `docker.sock` into `worker` directly — see `docs/adr/0002`. Why: blast-radius reduction; a compromised worker task shouldn't get host-Docker-daemon access.
-- CPU-seconds cap enforced as wall-clock timeout against a 1-CPU quota, not real cgroup CPU-time accounting — see `docs/adr/0002`. Why: correct for the single-threaded numeric scripts this system generates; precise CPU-time polling deferred until shown necessary.
-- `IssuedLedger.is_recycled` denormalized from `Variant.is_recycled` so the no-repeat guarantee is one Postgres partial unique index — see `docs/adr/0003`. Why: a partial unique index can't reference a sibling table's column.
-- Alembic migration for P1 is hand-written, not autogenerated — no live Postgres was reachable yet (Docker wasn't installed during this session) to run `alembic revision --autogenerate` against. Why: unblocks scaffold work now; re-verify with `alembic check` once the DB is up, in case it drifted from `db/models.py`.
-- `.env` was created (gitignored, placeholder `ANTHROPIC_API_KEY=`) so `docker compose up -d` has a file to load; user will fill in the real key themselves via `.env`, not through chat.
+- Sandbox execution isolated behind a dedicated `sandbox-runner` HTTP service rather than mounting `docker.sock` into `worker` directly — see `docs/adr/0002`. Why: blast-radius reduction; a compromised worker task shouldn't get host-Docker-daemon access. **Verified**: gate green with this design as-is, no changes needed once Docker was installed.
+- CPU-seconds cap enforced as wall-clock timeout against a 1-CPU quota, not real cgroup CPU-time accounting — see `docs/adr/0002`. **Verified** by `test_cpu_wall_clock_cap_kills_infinite_loop`.
+- `IssuedLedger.is_recycled` denormalized from `Variant.is_recycled` so the no-repeat guarantee is one Postgres partial unique index — see `docs/adr/0003`. Why: a partial unique index can't reference a sibling table's column. (Not yet exercised against a live DB — Phase 2/6 will do that.)
+- Alembic migration for P1 is hand-written, not autogenerated — still not diffed against a live DB via `alembic check`; do this once Phase 2 needs real DB writes.
+- `docker.sock` mount path made configurable via `DOCKER_SOCKET_MOUNT` (default Linux path, overridden in `.env` for this host) instead of hardcoded — user's explicit instruction, since the same compose file needs to work on both Linux and Windows/Docker Desktop.
+- Host dev tooling pinned to whatever Python is actually on the machine (3.11 via `--ignore-requires-python --no-deps`) rather than blocking on installing a 3.12 interpreter or relaxing `requires-python` in `pyproject.toml`. Why: the spec's "Python 3.12" requirement is about what runs generated/platform code (the sandbox image, worker, api containers — all still true 3.12-slim), not about which interpreter a human's `pytest` invocation happens to use on their own machine. Revisit (install real 3.12, drop the ignore-flag habit) if this starts causing a real 3.11/3.12 semantic mismatch instead of just a version-string gate.
 
 ## Blocked On
-Docker Desktop is not yet installed/on PATH in this environment (`docker: command not found` as of last check, 2026-08-09). The user said they'd install it themselves. P1's gate (`docker compose up -d && pytest tests/test_sandbox.py -v`) cannot be run until it is. Nothing else in P1 depends on this — all code is written and believed correct, but **unverified** against a live daemon.
+Nothing.
 
 ## Known Issues
-- `tests/test_sandbox.py` has never actually executed — written against docker-py's documented API but not run. Specific risks to check first: (1) `container.wait(timeout=...)` exception type on timeout may not be exactly what's caught by the broad `except Exception` in `runner.py:run_code` — acceptable either way since it's broad, but worth confirming the container really does get killed; (2) OOM-kill detection via `inspect_container(...)["State"]["OOMKilled"]` needs a real cgroup OOM to confirm; (3) Windows Docker Desktop (WSL2 backend) `/var/run/docker.sock` bind mount in `docker-compose.yml`'s `sandbox-runner` service — path may need adjustment for this host.
-- Migration `migrations/versions/0001_initial_schema.py` is hand-written against `src/practice_forge/db/models.py`; not yet diffed against a live DB via `alembic check`.
-- `mypy --strict` / `ruff` have not been run yet against `src/practice_forge/` — do this before Phase 2 adds more code on top.
-- `tests/fixtures/sample.pdf` (needed for Phase 2's gate) does not exist yet — nothing to ingest yet.
-- No `git commit` exists yet as of writing this file — the plan is to commit immediately after this file is saved.
+- `migrations/versions/0001_initial_schema.py` still not diffed against a live DB via `alembic check` / `alembic upgrade head` — no code has needed real DB writes yet. Do this at the start of Phase 2 work, before adding ingest code that writes `Book`/`Page` rows.
+- `mypy --strict` / `ruff` have not been run yet against `src/practice_forge/`. Do this before Phase 2 adds much more code on top — cheap to catch now.
+- `tests/fixtures/sample.pdf` (needed for Phase 2's gate) does not exist yet.
+- `ANTHROPIC_API_KEY` in `.env` is still blank (user said they'd fill it in themselves). Not blocking Phase 2's ingest-dedup gate (no LLM calls needed for file-hash/MinHash dedup or raw page extraction), but S2 (structure + discipline classification) and everything after will need it filled in before those gates can go green for real (as opposed to with mocked LLM calls in unit tests).
+- Host venv (`.venv/`, gitignored) is Python 3.11, not the spec's 3.12 — see Decisions Made. `sandbox-runner`, `worker`, `api` containers are unaffected (they build true `python:3.12-slim` images).
