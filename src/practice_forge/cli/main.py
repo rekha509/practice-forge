@@ -83,9 +83,14 @@ def ingest(
 
 @app.command()
 def structure(book_id: str) -> None:
-    """Detect chapter/section boundaries and map them onto topic nodes (S2)."""
+    """Detect chapter/section boundaries (TOC-driven, regex fallback) and
+    map them onto topic nodes (S2)."""
     with session_scope() as session:
-        sections = run_structure(session, uuid.UUID(book_id))
+        sections, report = run_structure(session, uuid.UUID(book_id))
+    typer.echo(
+        f"method={report.method} toc_entries_parsed={report.toc_entries_parsed} "
+        f"chapters_located={report.chapters_located}"
+    )
     for section in sections:
         typer.echo(f"pages {section.page_start}-{section.page_end}: {section.title}")
 

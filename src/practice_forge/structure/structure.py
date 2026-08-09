@@ -1,8 +1,13 @@
-"""S2: chapter/section boundaries from heading patterns, Section -> TopicNode
-mapping. Discipline classification is NOT implemented here — the uploader
-already supplies `--discipline` at ingest (S1); title/TOC-based
-auto-detection is a documented future refinement, not required by the spec
-("confirmable/overridable by the uploader" already covers a manual value).
+"""S2: chapter/section boundaries. TOC-driven (structure/toc.py) is the
+PRIMARY path, per the spec's original design — a real LLM pass over the
+table of contents, then real fuzzy text matching to locate each chapter's
+actual page. Heading regex (`detect_sections` below) is the FALLBACK, used
+only when no TOC can be found/parsed or nothing gets located from it — not
+tuning the regex to fit one book, replacing it as the primary strategy.
+
+Section -> TopicNode mapping unchanged from the original design (keyword
+overlap, docs/adr/0005). Discipline classification is NOT implemented here
+— the uploader already supplies `--discipline` at ingest (S1).
 """
 
 from __future__ import annotations
@@ -15,6 +20,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from practice_forge.db.models import BookORM, PageORM, SectionORM, TopicNodeORM
+from practice_forge.llm.client import LLMClient
+from practice_forge.structure.toc import (
+    LocatedChapter,
+    find_toc_text,
+    locate_chapter_pages,
+    parse_toc,
+)
 
 _CHAPTER_PATTERN = re.compile(r"^\s*Chapter\s+(\d+)\s*:?\s*(.*)$", re.IGNORECASE)
 
@@ -29,10 +41,18 @@ class DetectedSection:
     page_end: int
 
 
+@dataclass(frozen=True)
+class StructureRunReport:
+    method: str  # "toc" or "regex_fallback"
+    toc_entries_parsed: int
+    chapters_located: int
+
+
 def detect_sections(pages: list[tuple[int, str]]) -> list[DetectedSection]:
-    """`pages`: (page_no, markdown) in page order. A page's first non-blank
-    line matching `Chapter N[: title]` starts a new section running to the
-    page before the next chapter heading (or end of book)."""
+    """FALLBACK ONLY (see module docstring). `pages`: (page_no, markdown) in
+    page order. A page's first non-blank line matching `Chapter N[: title]`
+    starts a new section running to the page before the next chapter
+    heading (or end of book)."""
     headings: list[tuple[int, int | None, str]] = []
     for page_no, text in pages:
         stripped = text.strip()
@@ -54,15 +74,33 @@ def detect_sections(pages: list[tuple[int, str]]) -> list[DetectedSection]:
     first_page_no = pages[0][0]
     last_page_no = pages[-1][0]
 
-    # Front matter (title page, preface) before the first chapter heading —
-    # every page must fall inside some Section, since SourceProblem.section_id
-    # is a required FK.
     if headings[0][0] > first_page_no:
         sections.append(DetectedSection(None, "Front Matter", first_page_no, headings[0][0] - 1))
 
     for i, (page_no, chapter_no, title) in enumerate(headings):
         page_end = headings[i + 1][0] - 1 if i + 1 < len(headings) else last_page_no
         sections.append(DetectedSection(chapter_no, title, page_no, page_end))
+    return sections
+
+
+def detect_sections_from_located_chapters(
+    located: list[LocatedChapter], pages: list[tuple[int, str]]
+) -> list[DetectedSection]:
+    """Same span-building logic as `detect_sections`, but from real
+    TOC-parsed + fuzzy-matched chapter starts instead of regex matches."""
+    if not pages:
+        return []
+    first_page_no = pages[0][0]
+    last_page_no = pages[-1][0]
+
+    sections: list[DetectedSection] = []
+    if located and located[0].page_no > first_page_no:
+        sections.append(
+            DetectedSection(None, "Front Matter", first_page_no, located[0].page_no - 1)
+        )
+    for i, chapter in enumerate(located):
+        page_end = located[i + 1].page_no - 1 if i + 1 < len(located) else last_page_no
+        sections.append(DetectedSection(chapter.chapter_no, chapter.title, chapter.page_no, page_end))
     return sections
 
 
@@ -95,7 +133,9 @@ def match_topic_nodes(
     return [best_node.id]
 
 
-def run_structure(session: Session, book_id: uuid.UUID) -> list[SectionORM]:
+def run_structure(
+    session: Session, book_id: uuid.UUID, llm_client: LLMClient | None = None
+) -> tuple[list[SectionORM], StructureRunReport]:
     book = session.get(BookORM, book_id)
     if book is None:
         raise ValueError(f"No such book: {book_id}")
@@ -108,7 +148,22 @@ def run_structure(session: Session, book_id: uuid.UUID) -> list[SectionORM]:
         )
         .all()
     )
-    detected = detect_sections([(p.page_no, p.markdown) for p in pages])
+    pages_tuples = [(p.page_no, p.markdown) for p in pages]
+
+    toc_text = find_toc_text(pages_tuples)
+    if toc_text is not None:
+        client = llm_client or LLMClient()
+        entries = parse_toc(client, job_id=f"structure-toc-{book_id}", toc_text=toc_text)
+        located = locate_chapter_pages(entries, pages_tuples)
+        if located:
+            detected = detect_sections_from_located_chapters(located, pages_tuples)
+            report = StructureRunReport("toc", len(entries), len(located))
+        else:
+            detected = detect_sections(pages_tuples)
+            report = StructureRunReport("regex_fallback", len(entries), 0)
+    else:
+        detected = detect_sections(pages_tuples)
+        report = StructureRunReport("regex_fallback", 0, 0)
 
     topic_nodes = (
         session.execute(select(TopicNodeORM).where(TopicNodeORM.discipline_id == book.discipline_id))
@@ -130,4 +185,4 @@ def run_structure(session: Session, book_id: uuid.UUID) -> list[SectionORM]:
         session.add(section)
         sections.append(section)
     session.flush()
-    return sections
+    return sections, report
