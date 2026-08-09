@@ -20,6 +20,8 @@ from practice_forge.figures.figures import run_figure_descope
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.profiles.loader import list_profiles, load_profile
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
+from practice_forge.scoring.scoring import run_scoring
+from practice_forge.selection.selection import run_selection
 from practice_forge.structure.structure import run_structure
 
 app = typer.Typer(name="pf", help="Generate execution-verified engineering practice problem sets.")
@@ -139,6 +141,29 @@ def distill(book_id: str) -> None:
     typer.echo(f"distilled: {result['distilled']}")
     typer.echo(f"LaTeX parse failures: {result['parse_failures']}")
     typer.echo(f"clusters: {result['clusters']}")
+
+
+@app.command()
+def score(book_id: str) -> None:
+    """S6: six-axis candidate scoring (real batched Gemini call) +
+    deterministic eligible_extension_types gating."""
+    with session_scope() as session:
+        result = run_scoring(session, uuid.UUID(book_id), job_id=f"score-{book_id}")
+    typer.echo(f"scored: {result.get('scored', 0)} / {result.get('candidates', 0)} candidates")
+
+
+@app.command()
+def select(book_id: str) -> None:
+    """S7: constrained selection over the real scored pool for this book.
+    No LLM call. Reports honestly if the pool can't reach the 20-problem
+    target rather than silently returning fewer."""
+    with session_scope() as session:
+        result = run_selection(session, uuid.UUID(book_id))
+    typer.echo(f"pool size: {result.pool_size}")
+    typer.echo(f"can reach 20-problem target: {result.can_reach_target}")
+    typer.echo(f"reason: {result.reason}")
+    for constraint, satisfied in result.constraints_satisfied.items():
+        typer.echo(f"  [{'PASS' if satisfied else 'FAIL'}] {constraint}")
 
 
 if __name__ == "__main__":
