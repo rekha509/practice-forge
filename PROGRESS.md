@@ -65,8 +65,40 @@ ever raised.
 - (carried forward, unchanged) `config/llm_routing.yaml`'s RPM/RPD numbers are still best-effort, unverified against the real AI Studio account page.
 - (carried forward, unchanged) `match_topic_nodes` (S2) needs real `TopicNode.aliases` — moot right now since S2 isn't detecting real chapters on this book at all.
 
+## Completed (S2 TOC rebuild + quota/batching session, 2026-08-09)
+
+1. **S2 rewritten to be TOC-driven** (`structure/toc.py`, new), per the original spec's design — regex (`detect_sections`) is now the fallback, not primary. One real LLM call (`stage="s2_structure"`) parses the book's own table of contents into a chapter list; real `difflib` fuzzy matching locates each chapter's true starting page in the ingested content. Built and validated against a new real 80-page fixture (`tests/fixtures/nag_s2_validation.pdf`, chapters 3-6 of the real book) — deliberately separate from `tests/fixtures/nag_real.pdf`, which is reserved for the user's own hand-count and was never touched.
+2. **Two real matching bugs found and fixed via live validation**, not assumed:
+   - First implementation matched each page's first 3 lines against the TOC title. On a chapter's *true* start page the title is immediately followed by body prose, which diluted the fuzzy-match ratio below a later page's shorter, noisier running header — wrong page won, and one chapter (6) fell just under the 0.55 threshold entirely (measured: 0.23 for the true page vs. 0.60 for a wrong one; Chapter 6 measured 0.528, just under threshold). Result before fix: `chapters_located=3` of 4 locatable, with wrong page boundaries.
+   - Narrowing to first-line-only fixed that, but broke titles that print wrapped across two lines (confirmed: "Second Law of" / "Thermodynamics" on separate lines) — the truncated line let a same-family chapter title false-match at a higher score (0.836) than the true, truncated match (0.634).
+   - Final fix: for each page, try matching against its first 1, 2, and 3 non-blank lines and keep that page's best score. Verified live: **4/4 locatable chapters recovered, in correct order, with page boundaries matching hand-computed ground truth exactly** (Ch3→page 6, Ch4→page 31, Ch5→page 49, Ch6→page 79).
+3. **Found and fixed a real scalability bug in S5 and S6**: both sent every one of a book's items in a single unbatched LLM call (unlike S3's chunked `BATCH_SIZE=20`). At the full-book projected scale (~117 solvable concepts) this would exceed `max_tokens` and fail. Chunked both the same way S3 already does (`BATCH_SIZE=10` for S5, `15` for S6 — smaller than S3's 20 since each item's schema carries more free-text fields).
+4. **Found and fixed a real bug in the embedding call, confirmed live**: `gemini-embedding-001`'s batch endpoint hard-rejects over 100 items per request (`400 INVALID_ARGUMENT`, verified with a live 150-item call). `embed_texts` sent all of a book's texts in one call — fine at 30-page scale (5 items), would crash at the full-book projected scale (~117). Chunked at the confirmed limit.
+5. **Found and fixed a real observability gap**: the CLI never called `logging.basicConfig()`, so `llm/client.py`'s per-request structured usage log (job_id/stage/tokens/cost) was silently dropped at INFO level all session — most of this session's real per-stage token counts were never durably captured. Fixed: `practice_forge.llm` logger now writes to both stderr and an appended JSONL file (`data/llm_usage.log`), so a real multi-day, multi-invocation ingest can be aggregated afterward.
+
+## Real Gemini usage — 30-page run, and 700-page projection
+
+**What is precisely known:** one real S3 confirm call = 5707 input / 1626 output tokens (captured via a manual debug script before the logging fix existed). Every other stage's exact historical token count from the original 30-page run was lost to the logging gap above and cannot be honestly reconstructed after the fact — re-running the real pipeline against the *same* book to recapture it risks inserting duplicate rows (none of S3/S5/S6 check for existing output before inserting), so it was not attempted. Going forward, `data/llm_usage.log` captures this for real, per-request, for every run from now on.
+
+**What is known precisely from real, already-persisted counts** (not re-run, just queried): the 30-page book has 1 section, 8 confirmed `SourceProblem`s, 5 solvable, 5 `ConceptCard`s, 5 `ConceptCluster`s, 5 `CandidateScore`s — all in a single batch per stage (well under each stage's `BATCH_SIZE`).
+
+**700-page projection** (23.3x page-count scale-up from the 30-page real counts, assuming roughly uniform problem density across chapters — a real, disclosed assumption, not verified across the whole book):
+- Confirmed problems: ~187 (8 × 23.3); solvable after S4: ~117 (matches this session's earlier ~117 estimate)
+- **S2** (structure): 1 request, fixed — TOC parsing doesn't scale with page count
+- **S3** (detect): candidates ≥ confirmed count; at `BATCH_SIZE=20`, ~10-18 requests
+- **S5** (distill): ~117 concepts at `BATCH_SIZE=10` → ~12 requests
+- **S6** (score): ~117 cards at `BATCH_SIZE=15` → ~8 requests
+- **S4**: 0 requests (no LLM call)
+- **Total: ~31-39 real Gemini requests for a full 700-page ingest.**
+
+Against the free-tier daily caps in `config/llm_routing.yaml` (`gemini-flash-lite-latest`: 1000 RPD / 15 RPM; `gemini-flash-latest`: 250 RPD / 10 RPM) this is comfortable headroom — **quota exhaustion within a single day is not expected**, contradicting the premise that would require multi-day checkpointing. This is a request-*count* projection with real structural grounding (actual batch sizes × real candidate/concept counts); it is not a token-*volume* projection — only one real per-request token sample exists (S3's), not enough to project total token cost with confidence, and `config/llm_routing.yaml`'s RPM/RPD are still the empirically-probed-but-unverified-against-the-account-page numbers from `docs/adr/0006`.
+
+**Not yet addressed**: `gemini-embedding-001` calls still aren't covered by the rate limiter (`config/llm_routing.yaml` only models `generate_content`-style calls) — a real gap, not hit yet because embedding volume is trivial relative to any plausible free-tier cap, but unverified.
+
+## Known Issues (updated)
+- (all Known Issues from the prior run carried forward except the S2 heading-detection gap, now fixed — see above)
+- S2's chapter-heading detection is fixed for the TOC-driven path; the plain regex fallback (`detect_sections`) is unchanged and still won't match this book's real OCR'd headings on its own — only relevant if a book has no locatable TOC.
+- Given the 700-page request-count projection shows comfortable headroom against daily caps, **Task #24 (multi-day resume checkpointing) may not be necessary as originally scoped** — flagging this rather than building unneeded infrastructure or silently skipping the user's instruction. Pipeline stages S2-S7 still have no partial-resume today (only S1 ingest does, page-level) — a crash mid-run would require re-running that stage from scratch, which is a real resilience gap independent of quota.
+
 ## Next Immediate Task
-Two real options, both legitimate:
-1. **Re-run against the full textbook** (all ~700 pages of `Thermodynamics by PK Nag.pdf`, not the 30-page excerpt) to get a real read on whether ≥60 concepts / 20-per-set are reachable at actual scale — the more informative next step, but a much larger real Gemini call volume (still comfortably within free-tier daily limits given the per-book batching already built, but should be estimated before running).
-2. **Fix S2's real heading-detection gap** first, since it's the single highest-leverage fix given how many of this run's constraint failures trace back to it, then re-run the smaller excerpt to confirm the fix actually changes the topic-distinctness numbers before scaling up.
-Neither was started in this run — flagging both rather than picking one unilaterally, since it's a genuine judgment call about what to prioritize next, not a fact to record.
+Reported to the user: the S2 fix, the three batching/logging bugs found and fixed, and the 700-page projection showing quota is not expected to be the binding constraint. Awaiting direction on whether to (a) proceed straight to the full 700-page run, (b) still build lightweight crash-resume for S2-S7 as general resilience (not quota-driven), or (c) something else — this changes the premise of the instruction that scoped Task #24, so flagged rather than decided unilaterally.
