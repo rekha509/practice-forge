@@ -57,7 +57,7 @@ class CandidateScore(BaseModel):
     scoring_rationale: dict[str, str]  # axis name -> one-line written rationale
 
     @model_validator(mode="after")
-    def _axes_in_range(self) -> "CandidateScore":
+    def _axes_in_range(self) -> CandidateScore:
         for axis in AXIS_WEIGHTS:
             value = getattr(self, axis)
             if not 0.0 <= value <= 5.0:

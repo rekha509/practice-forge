@@ -1,17 +1,20 @@
 """`pf` — the practice-forge CLI.
 
-`ingest` and `generate` are stubs until their pipeline stages land (P2 and
-P7-P10 respectively); `profiles` is fully functional now since it only
-exercises the declarative discipline config (see profiles/loader.py).
+`generate` is a stub until S6-S10 land (Phases P6-P10); `profiles` and
+`ingest` are fully functional.
 """
 
 from __future__ import annotations
 
+import getpass
 from pathlib import Path
 
 import typer
 
+from practice_forge.db.base import session_scope
+from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.profiles.loader import list_profiles, load_profile
+from practice_forge.profiles.sync import sync_disciplines
 
 app = typer.Typer(name="pf", help="Generate execution-verified engineering practice problem sets.")
 profiles_app = typer.Typer(help="Inspect discipline profiles.")
@@ -32,17 +35,41 @@ def profiles_show(key: str) -> None:
     typer.echo(profile.model_dump_json(indent=2))
 
 
-@app.command()
-def ingest(pdf_path: Path, discipline: str | None = None) -> None:
-    """Ingest a textbook PDF (S1: file/book dedup, page extraction).
+@profiles_app.command("sync")
+def profiles_sync() -> None:
+    """Upsert profiles/*.yaml into the disciplines table."""
+    with session_scope() as session:
+        synced = sync_disciplines(session)
+    for profile in synced:
+        typer.echo(f"synced {profile.key}")
 
-    Not yet implemented — lands in Phase P2. See PROGRESS.md.
-    """
-    typer.echo(
-        "pf ingest is not implemented yet (Phase P2 — see PROGRESS.md 'Next Immediate Task').",
-        err=True,
-    )
-    raise typer.Exit(code=1)
+
+@app.command()
+def ingest(
+    pdf_path: Path,
+    discipline: str = typer.Option(..., "--discipline", help="Discipline profile key."),
+    uploaded_by: str = typer.Option(
+        None, "--uploaded-by", help="Defaults to the current OS user."
+    ),
+) -> None:
+    """Ingest a textbook PDF: exact-hash dedup, cross-edition MinHash dedup,
+    per-page extraction (S1)."""
+    if not pdf_path.exists():
+        typer.echo(f"No such file: {pdf_path}", err=True)
+        raise typer.Exit(code=1)
+
+    with session_scope() as session:
+        result = run_ingest(
+            session,
+            pdf_path,
+            discipline_key=discipline,
+            uploaded_by=uploaded_by or getpass.getuser(),
+        )
+
+    if result.dedup_hit:
+        typer.echo(f"dedup hit ({result.dedup_hit}) - reusing book_id={result.book_id}")
+    else:
+        typer.echo(f"ingested book_id={result.book_id}, {result.pages_ingested} pages")
 
 
 @app.command()

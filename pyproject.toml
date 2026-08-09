@@ -27,6 +27,7 @@ dependencies = [
     "matplotlib>=3.9",
     "datasketch>=1.6",
     "httpx>=0.27",
+    "pypdf>=4.2",
 ]
 
 [project.scripts]
@@ -38,6 +39,7 @@ dev = [
     "pytest-cov>=5.0",
     "mypy>=1.10",
     "ruff>=0.5",
+    "fpdf2>=2.7",  # tests/fixtures generation only (scripts/make_fixtures.py)
 ]
 
 [build-system]
@@ -50,12 +52,21 @@ packages = ["src/practice_forge"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-exclude = ["tests/fixtures", "code/"]
+exclude = ["tests/fixtures", "code/", "scripts/"]
+
+# docker-py and datasketch ship no py.typed marker / stub package.
+[[tool.mypy.overrides]]
+module = ["docker", "docker.*", "datasketch", "datasketch.*"]
+ignore_missing_imports = true
+# No py.typed marker; mypy still walks docker's untyped source (rather than
+# treating the import as opaque) and trips over its dynamic re-exports
+# (docker/client.py's from_env). Treat both as opaque Any instead.
+follow_imports = "skip"
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-exclude = ["tests/fixtures", "code/"]
+exclude = ["tests/fixtures", "code/", "scripts/"]
 
 [tool.pytest.ini_options]
 markers = [

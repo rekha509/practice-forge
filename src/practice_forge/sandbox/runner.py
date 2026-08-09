@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import docker
 from docker.errors import NotFound
+
+import docker
 
 DEFAULT_IMAGE = "practice-forge-sandbox-base:latest"
 
@@ -63,7 +64,13 @@ def run_code(
         try:
             wait_result = container.wait(timeout=timeout_s)
             exit_code = wait_result.get("StatusCode")
-        except Exception:
+        except Exception:  # noqa: BLE001 - the client-side timeout on a hung
+            # container can surface as requests.ReadTimeout, urllib3's
+            # TimeoutError, or a docker.errors.APIError wrapping either,
+            # depending on transport and docker-py version. Whatever it is,
+            # the response is the same: the container didn't finish in time,
+            # kill it. Narrowing this risks silently not-catching on a future
+            # docker-py release and leaving a runaway container behind.
             timed_out = True
             container.kill()
             wait_result = container.wait(timeout=5)

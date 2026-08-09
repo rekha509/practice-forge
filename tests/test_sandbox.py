@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import docker
 import pytest
 from docker.errors import ImageNotFound
 
+import docker
 from practice_forge.sandbox.runner import DEFAULT_IMAGE, run_code
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

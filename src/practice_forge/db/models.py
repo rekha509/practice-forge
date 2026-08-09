@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
+    TIMESTAMP,
     Boolean,
     Float,
     ForeignKey,
     Index,
     Integer,
     String,
-    TIMESTAMP,
     text,
 )
 from sqlalchemy import Enum as SAEnum
@@ -158,7 +159,7 @@ class FigureORM(Base):
     figure_kind: Mapped[FigureKind] = mapped_column(
         SAEnum(FigureKind, native_enum=False), nullable=False
     )
-    structured_spec_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    structured_spec_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     interpretation_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
@@ -265,7 +266,7 @@ class CandidateScoreORM(Base):
     difficulty: Mapped[DifficultyLevel] = mapped_column(
         SAEnum(DifficultyLevel, native_enum=False), nullable=False
     )
-    scoring_rationale: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scoring_rationale: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
 class VariantORM(Base):
@@ -276,7 +277,7 @@ class VariantORM(Base):
         PG_UUID(as_uuid=True), ForeignKey("concept_clusters.id"), nullable=False
     )
     statement_md: Mapped[str] = mapped_column(String, nullable=False)
-    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     difficulty: Mapped[DifficultyLevel] = mapped_column(
         SAEnum(DifficultyLevel, native_enum=False), nullable=False
     )
@@ -294,7 +295,7 @@ class VariantORM(Base):
     extension_figure_paths: Mapped[list[str]] = mapped_column(
         ARRAY(String), nullable=False, default=list
     )
-    extension_metrics_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    extension_metrics_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     verified_answer: Mapped[str | None] = mapped_column(String, nullable=True)
     verification_status: Mapped[VerificationStatus] = mapped_column(
@@ -307,7 +308,7 @@ class VariantORM(Base):
     )
 
     needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    source_ref: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     is_recycled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
