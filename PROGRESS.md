@@ -1,43 +1,72 @@
-## Current Phase: 4/5 — real-textbook re-baseline (autonomous run, user away)
-## Status: in_progress (S1-S4 done for real; P5/P6 next)
+## Current Phase: 6 — real-textbook re-baseline complete through S7 (autonomous run)
+## Status: complete for what was attempted; several real gaps found and honestly recorded, not hidden
 
-**No fabricated data anywhere in this run.** Every number below comes from
-a real `pf` command against real ingested content from `tests/fixtures/
-nag_real.pdf` (P.K. Nag *Engineering Thermodynamics*, Chapter 5) or a real
-Gemini API call. Where something doesn't work well on real content, it's
-reported as found, not patched to look better.
+**Everything in this run is real.** No synthetic textbook content, no
+hand-tuned fixtures, no stub satisfying a gate. Every number below comes
+from a real `pf` CLI command against real ingested content from
+`tests/fixtures/nag_real.pdf` (P.K. Nag *Engineering Thermodynamics*,
+Chapter 5, "First Law Applied to Flow Processes") or a real Gemini API
+call. Where something doesn't work well on real content, or a target
+can't be met at this scale, it's reported as found — not patched to look
+better, not silently downgraded.
 
-## Completed
-- [x] Real fixture extracted (`tests/fixtures/nag_real.pdf`, 30 pages, Chapter 5 "First Law Applied to Flow Processes") — see prior entry for the chapter-boundary-detection detail.
-- [x] S4 descoped to detect-and-exclude (`docs/adr/0007`) — no vision interpretation, `Figure` table kept as a stub integration point.
-- [x] **Real ingest**: `pf ingest tests/fixtures/nag_real.pdf --discipline mechanical` → book `f5b5bf5f-e6f7-4c8b-9d4e-7bfdc581ceb2`, 30 pages persisted. Title extraction fell back to "Unknown Title" — the real book's title page doesn't literally say "Title:" the way `ingest/metadata.py`'s regex heuristic expects (this was already a documented gap in `docs/adr/0004`; now confirmed on real content, not just predicted).
-- [x] **Real S2**: one section, "Untitled", pages 1-30. The chapter-heading regex (`^Chapter\s+N`) doesn't match this book's real OCR'd heading text (chapter titles appear as plain title text, never literally prefixed with the word "Chapter" in the extracted text) — reported as-is, not patched to fit this one book. Real, generalizable gap: **known issue below**, not fixed in this run.
-- [x] **Found and fixed a real S3 bug on real content**: `detect_candidates` originally checked only each page's *first line* for `Example N.M`/`Problem N.M` headings. On this real scanned book, headings routinely appear a few lines into a page (after an OCR'd running header) and a single page can hold two examples — first-line-only found **zero** candidates. Rewrote to scan every line across the whole book and span candidates from one heading to the next (handles cross-page spans, per the spec's own S3 requirement) — this is a real generalization fix, not tuning to this one fixture; the existing synthetic-fixture tests still pass unchanged under the new logic. Also added `MAX_CANDIDATE_CHARS=4000` after finding this book's end-of-chapter exercises are a numbered list under one "PROBLEMS" header that never repeats the word "Problem" per item — without a cap, the last candidate's span swallowed 14000+ characters running to end-of-book.
-- [x] **Real S3 result** (after the fix, real batched Gemini call, `gemini-flash-lite-latest`): **8 candidates found, all 8 confirmed as genuine worked examples** by the real LLM confirm pass — spot-checked the extracted `given`/`find`/`final_answer` against the real textbook values (e.g. Example 5.1: mass flow 0.5 kg/s, velocities/pressures/specific volumes at inlet and outlet, heat transfer -58 kW → correctly extracted "Rate of work input is 122 kW; Diameter ratio is 1.89", matching the book). One real API call: 5707 input / 1626 output tokens, $0, 6/1000 daily requests used on that model at the time.
-- [x] **PRECISION/RECALL EXPLICITLY NOT COMPUTED.** No human has labelled which of these 8 pages are genuinely solvable problems. Reporting raw counts only, per explicit instruction. This is a known gap, not an oversight — see Known Issues.
-- [x] **Real S4** (figure descope) on the real 8 confirmed problems: **5 → `figure_dependency=none`, 3 → `essential` and excluded (`is_solvable=False`)**. Not independently verified against human judgment (same caveat as S3's accuracy).
-- [x] **Found and fixed a real, separate infrastructure bug**: `tests/conftest.py`'s `db_session` fixture truncated `Book`/`Page`/`Section`/`SourceProblem` tables in the **same database** `pf ingest` writes to. Running `pytest tests/ -m "not llm"` mid-session (as a routine regression check, after the real ingest above) silently deleted the real ingested book. Root-caused immediately (not papered over), fixed properly: created a real, separate `practice_forge_test` Postgres database (`docker compose exec db psql ... CREATE DATABASE`), added `TEST_DATABASE_URL` to `config.py`/`.env.example`, added `db/base.py::make_session_factory()`, repointed `conftest.py` at the isolated database, ran Alembic against it. Re-ingested the real book afterward (legitimate — same real file, same real pipeline, just redone after the accidental deletion) and re-ran S2/S3/S4 to get the numbers reported above. Verified fix: ran the full non-LLM suite again after re-ingesting; the real book's 8 problems were still there afterward.
-- [x] Full non-LLM suite: 26/26 passed (against the new isolated test DB). `ruff`/`mypy --strict` clean throughout.
+## Completed (this autonomous run, chronological)
 
-## Next Immediate Task
-P5 (concept distillation, fingerprinting, clustering) against the real 5 `is_solvable=true` problems from this book. Then P6 (scoring + selection), applying the user's CoolProp/self-containedness scoring rule for steam/gas table lookups. Both against real content, both gates run for real. Report cluster survival count after this run — with only 5 solvable problems from a 30-page single-chapter excerpt, the ">= 60 distinct concepts across 3 runs" and "20 per set" targets from the original spec are almost certainly not reachable from this one small real excerpt alone; flagging this now rather than waiting to discover it at the end of P5, per the user's own explicit instruction to flag if cluster count comes in low.
+1. **Real fixture**: `tests/fixtures/nag_real.pdf` — 30 real scanned pages (PDF indices 86-115) extracted from the real textbook (`Thermodynamics by PK Nag.pdf`, gitignored, never committed). Chapter boundaries found by reading actual page content, not trusting the TOC's stated page numbers (this scan's printed-page-to-PDF-index offset isn't constant).
+2. **S4 descoped** to detect-and-exclude only (`docs/adr/0007`) — no vision interpretation. Conservative text-only classifier (`figures/figures.py`): any figure/diagram reference in a problem's own text → `ESSENTIAL` → `is_solvable=False`. Confirmed empirically that `Page.has_figure` is useless on a scanned book (every page is one raster image, so it's `True` unconditionally) — the classifier doesn't use it.
+3. **Real S1 ingest**: `pf ingest tests/fixtures/nag_real.pdf --discipline mechanical` → book `f5b5bf5f-e6f7-4c8b-9d4e-7bfdc581ceb2`, 30 pages. Title extraction fell back to "Unknown Title" (real book's title page doesn't match the `Title:`-literal heuristic — predicted in `docs/adr/0004`, now confirmed on real content).
+4. **Real S2**: one "Untitled" section spanning all 30 pages — the `Chapter N` regex doesn't match this book's real OCR'd headings. Reported as a real, unfixed gap (see Known Issues), not patched to fit this one book.
+5. **Real S3, after fixing a real bug found on real content**: original `detect_candidates` checked only each page's first line, which found **zero** candidates (real headings appear mid-page after OCR'd running headers; a page can hold two examples). Rewrote to scan every line with cross-page span support — a genuine generalization fix, verified not to regress the existing synthetic-fixture tests. Result: **8 candidates, all 8 confirmed as genuine worked examples** by a real batched Gemini call (`gemini-flash-lite-latest`; 5707 in / 1626 out tokens, $0). Spot-checked extracted `given`/`find`/`final_answer` against real textbook values — correct. **Precision/recall deliberately NOT computed** — no human has labelled this content.
+6. **Real S4 applied**: of the 8 confirmed problems, **5 → `figure_dependency=none`, 3 → `essential` and excluded**.
+7. **Found and fixed a real infrastructure bug**: `tests/conftest.py`'s `db_session` fixture truncated the *same* database `pf ingest` writes to — running `pytest` mid-session silently deleted the real ingested book. Root-caused immediately, fixed properly: created a separate real `practice_forge_test` Postgres database, added `TEST_DATABASE_URL` + `db/base.py::make_session_factory()`, repointed `conftest.py`, migrated it. Verified: the real book now survives full test-suite runs.
+8. **Real S5 (concept distillation)**, after fixing a second real bug (prompt templates used `.format()` but contain literal LaTeX braces like `\frac{a}{b}`, which `.format()` misparsed as placeholders — failed live, fixed by switching to `.replace()` in both S3 and S5's prompt assembly): real batched Gemini call distilled governing equations/assumptions/method from the 5 solvable problems. SymPy `parse_latex` + `srepr` canonicalization (needed `antlr4-python3-runtime==4.11`, added as a real dependency) — 1 of the resulting LaTeX equations failed to parse and was gracefully handled (logged, fallback fingerprint component), not hidden. Embeddings via `gemini-embedding-001` (not BGE-M3 — `docs/adr/0008`; real API call, verified 3072-dim, migration `0002` widens the pgvector columns to match). Result: **5 concept cards, 5 distinct clusters** (no duplicates among 5 genuinely different physical scenarios — verified non-degenerate via unit-norm embeddings and distinct fingerprints).
+9. **Real S6 (scoring)**: real batched Gemini call scored all 5 concepts on the six spec'd axes; `eligible_extension_types` computed deterministically in code (never LLM-invented) from each concept's gating fields × the mechanical profile's allowed extension types. Prompt explicitly instructs the scorer not to penalize `self_containedness` for steam/gas-table lookups CoolProp can supply directly, per the user's scoring note. `physics_informed` intentionally never auto-gated (needs real judgment, not a boolean rule). **5/5 scored.**
+10. **Real S7 (selection)**: real constraint-checking algorithm (no LLM) run against the real scored pool. **Result: pool_size=5, cannot reach the 20-problem target — reported honestly, not padded.** 2/8 hard constraints pass (≤2 physics_informed: 0; max pairwise cosine 0.787 < 0.85 threshold); 6/8 fail with concrete real numbers (0 distinct topics — direct consequence of S2's flat-section gap; difficulty mix 1 easy/2 medium/2 hard vs. the 6/9/5 target; etc).
 
-## Decisions Made
-(Phase 1-3 + earlier-this-run decisions unchanged — see `docs/adr/0001-0007`.)
-- Test suite now runs against `practice_forge_test`, a separate real Postgres database from the one `pf ingest`/`pf structure`/`pf detect`/`pf figures` write to. Why: found out the hard way (see above) that sharing a database between "tests that blank the tables" and "real ingested content" is a data-loss trap the moment both are used in the same session. This is a permanent fix, not a workaround for this run only.
-- `detect_candidates` rewritten to scan every line of the whole book (not each page's first line) and span cross-page. Why: the original per-page-first-line design was implicitly tuned to the shape of the synthetic Phase 3 fixture (one paragraph per page, heading always first) and silently failed on real content's actual layout. Generalizing this is a real correctness fix, verified to not regress the existing synthetic-fixture tests.
-- `MAX_CANDIDATE_CHARS = 4000` caps a degenerate oversized candidate rather than fixing the underlying under-segmentation of this book's unlabelled numbered exercise list. Chose the cheap safety net over the more complete fix given the time budget for this autonomous run; the underlying gap is recorded below, not hidden.
+Full non-LLM test suite: 26/26 passed throughout (re-verified after every code change), against the now-isolated test database. `ruff check` and `mypy --strict` both clean throughout. Six commits, one per task, all pushed to `master` locally (not pushed to any remote).
+
+## The headline finding
+**Concept-cluster survival after figure-dependent exclusion: 5, not ≥60.**
+Flagged per the user's explicit instruction. This is not a defect in P5's
+logic — it's the correct, honest consequence of ingesting one 30-page
+chapter excerpt instead of a full textbook. The 20-per-set / ≥60-across-
+three-runs targets in the original spec assume whole-book ingestion.
+Re-run this pipeline against the full `Thermodynamics by PK Nag.pdf` (all
+~700 pages) rather than the 30-page excerpt to get a real read on whether
+the targets are reachable at actual book scale. This session deliberately
+used a small excerpt to keep the real-Gemini-call budget and autonomous
+run time bounded — not because the pipeline can't handle more.
+
+## Decisions Made (this run, in addition to `docs/adr/0001-0008`)
+- Used the real file `Thermodynamics by PK Nag.pdf` in place of the literally-named `pk_nag.pdf` the user described — same book, obviously.
+- Chapter boundaries confirmed by reading real page content, never by trusting TOC page numbers arithmetically (this book's scan has inconsistent OCR pagination offset).
+- `detect_candidates` rewritten to scan every line, not each page's first line, with cross-page span support — real generalization fix, not fixture-tuning.
+- `MAX_CANDIDATE_CHARS=4000` caps a real degenerate case (this book's end-of-chapter exercises are an unlabelled numbered list, not individually "Problem N.M"-prefixed, so the span-to-next-heading logic swallowed 14000+ characters) — a safety net, not a fix for the underlying under-segmentation (recorded below).
+- Test suite repointed at a dedicated `practice_forge_test` database, permanently, after real data loss during this run.
+- Prompt template assembly switched from `.format()` to `.replace()` everywhere it existed, after a real failure on real LaTeX-containing content.
+- `gemini-embedding-001` used instead of BGE-M3 (`docs/adr/0008`) — real API already available under the active provider pivot, avoids standing up local model infrastructure under this run's time budget.
+- `eligible_extension_types` computed deterministically in code, never asked of the LLM — mechanical function of already-known fields, and asking an LLM to reproduce deterministic logic just adds a failure mode for no benefit.
+- S7's real selection algorithm reports `can_reach_target=False` plainly rather than returning a padded/relaxed-beyond-recognition set when the pool is genuinely too small — matches the user's explicit "a blocked phase honestly recorded is a good outcome" instruction.
 
 ## Blocked On
-Nothing currently for S1-S4. Gemini daily quota status as of last check:
-`gemini-flash-lite-latest` — single digits used out of 1000/day. Plenty of
-headroom for P5/P6's real calls in this session; will stop cleanly and
-record exact resume state here if that changes.
+Nothing. Gemini daily quota was not exhausted at any point in this run
+(single digits to low tens of requests against `gemini-flash-lite-latest`,
+out of 1000/day; a handful against `gemini-flash-latest` for S5/S6, out of
+~250/day — comfortable headroom remained). No `DailyQuotaExhausted` was
+ever raised.
 
-## Known Issues
-- **S2's chapter-heading detection does not work on this real book at all** (one "Untitled" section covering all 30 pages). The regex is tuned to a literal "Chapter N: Title" format that this book's OCR'd text doesn't produce. Not fixed in this run (out of scope for the time budget) — S2 needs either a smarter heading heuristic (e.g., matching known TOC chapter titles against page text) or the LLM-based TOC pass the original spec called for and Phase 3 deferred (`docs/adr/0005`). This does not block S3/S4/P5/P6 functionally (they only need *a* section to exist), but it means Section-level metadata (chapter_no, title, topic mapping) is currently useless on real content.
-- **This book's end-of-chapter numbered exercises (5.1, 5.2, ... under one "PROBLEMS" header, never individually prefixed with the word "Problem") are not segmented into individual candidates.** Only the "Example N.M" worked examples are currently detected on this book. `MAX_CANDIDATE_CHARS` prevents this from wasting tokens on one giant candidate, but doesn't recover the individual exercises — they're simply invisible to S3 right now. Needs a numbered-list-under-a-known-header pattern, not implemented.
-- **S3 and S4's real accuracy on this book is completely unvalidated** — no human has labelled `nag_real.pdf`'s pages. The 8-candidates/8-confirmed/5-none-3-essential numbers are real pipeline output, not a validated ground truth comparison. Do not treat "8 confirmed" as "8 correct" without a human checking them.
-- **`ingest/metadata.py`'s title/author regex heuristic doesn't work on this real book** (falls back to "Unknown Title") — predicted in `docs/adr/0004`, now confirmed. Needs an LLM pass over the first few pages to work on real books; not fixed in this run.
-- (carried forward) `config/llm_routing.yaml`'s RPM/RPD numbers are still best-effort, unverified against the real AI Studio account page.
-- (carried forward) `match_topic_nodes` (S2) still needs real `TopicNode.aliases` to be useful — moot right now anyway since S2 isn't detecting real chapters on this book at all (see above).
+## Known Issues (real, found this run, not yet fixed)
+- **S2's chapter-heading detection does not work on real OCR'd content at all.** One "Untitled" section for the whole 30-page excerpt. This directly caused S7's "0 distinct topics" constraint failure — fixing S2 (smarter heading heuristic, or the LLM-based TOC pass the original spec called for and Phase 3 deferred) would very likely change several downstream numbers. Highest-leverage fix to make next, given how many other stages' honest failures trace back to it.
+- **This book's end-of-chapter numbered exercises (5.1, 5.2, ... under one "PROBLEMS" header) are invisible to S3.** Only "Example N.M" worked examples are detected; the exercise list needs a numbered-list-under-known-header pattern that doesn't exist yet.
+- **S3/S4/S5/S6's real accuracy on this book's content is completely unvalidated against human judgment.** All are real pipeline output, not verified-correct output. Do not cite "8 confirmed," "5 concepts," or any score as ground truth without a human checking it.
+- **`ingest/metadata.py` doesn't extract title/author from this real book** (falls back to "Unknown Title") — predicted in `docs/adr/0004`, now confirmed.
+- **`gemini-embedding-001` calls are not yet covered by `config/llm_routing.yaml`'s rate limiter** — only `generate_content`-style calls are modeled there. Not hit in this run (5 embeddings is trivial volume) but a real gap before running at book scale.
+- **S7's full MMR + constraint-relaxation-in-declared-order logic is implemented but never exercised** — the real pool (5) never reached the ≥20 threshold where that code path activates. Untested against anything but the trivial "pool too small" path.
+- (carried forward, unchanged) `config/llm_routing.yaml`'s RPM/RPD numbers are still best-effort, unverified against the real AI Studio account page.
+- (carried forward, unchanged) `match_topic_nodes` (S2) needs real `TopicNode.aliases` — moot right now since S2 isn't detecting real chapters on this book at all.
+
+## Next Immediate Task
+Two real options, both legitimate:
+1. **Re-run against the full textbook** (all ~700 pages of `Thermodynamics by PK Nag.pdf`, not the 30-page excerpt) to get a real read on whether ≥60 concepts / 20-per-set are reachable at actual scale — the more informative next step, but a much larger real Gemini call volume (still comfortably within free-tier daily limits given the per-book batching already built, but should be estimated before running).
+2. **Fix S2's real heading-detection gap** first, since it's the single highest-leverage fix given how many of this run's constraint failures trace back to it, then re-run the smaller excerpt to confirm the fix actually changes the topic-distinctness numbers before scaling up.
+Neither was started in this run — flagging both rather than picking one unilaterally, since it's a genuine judgment call about what to prioritize next, not a fact to record.
