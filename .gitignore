@@ -20,6 +20,11 @@ node_modules/
 out/
 *.pdf
 !tests/fixtures/*.pdf
+# Full source textbook (real copyrighted book, repo root) — already covered
+# by *.pdf above, named explicitly so the intent is unambiguous. Only the
+# extracted tests/fixtures/nag_real.pdf excerpt is ever committed.
+Thermodynamics by PK Nag.pdf
+pk_nag.pdf
 sandbox_tmp/
 data/books/
 data/figures/
