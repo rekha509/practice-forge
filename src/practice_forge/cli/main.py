@@ -13,7 +13,7 @@ from pathlib import Path
 import typer
 
 from practice_forge.db.base import session_scope
-from practice_forge.detection.detection import make_default_confirm_fn
+from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.profiles.loader import list_profiles, load_profile
@@ -88,10 +88,11 @@ def structure(book_id: str) -> None:
 
 @app.command()
 def detect(book_id: str) -> None:
-    """Detect worked examples/exercises via regex candidates + an LLM
+    """Detect worked examples/exercises via regex candidates + a batched LLM
     confirm pass, persisted as SourceProblem rows (S3). Requires structure
-    (S2) to have run first and ANTHROPIC_API_KEY to be set."""
-    confirm_fn = make_default_confirm_fn(job_id=f"detect-{book_id}")
+    (S2) to have run first and GEMINI_API_KEY to be set (see
+    config/llm_routing.yaml for the stage->provider/model mapping)."""
+    confirm_fn = make_default_batch_confirm_fn(job_id=f"detect-{book_id}")
     with session_scope() as session:
         problems = run_detection_(session, uuid.UUID(book_id), confirm_fn=confirm_fn)
     for problem in problems:

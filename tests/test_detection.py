@@ -1,18 +1,18 @@
-"""Phase 3 plumbing test: proves regex candidates -> confirm step -> persist
--> precision/recall scoring is wired correctly. It does NOT validate S3's
-real-world detection accuracy.
+"""Phase 3 detection tests.
 
-`_fake_confirm` below is not a proxy for the real LLM confirm pass — it is a
-hand-written function, string-matching this exact fixture's exact phrases
-("qualitatively only", a "Problem" prefix), written by the same person who
-wrote the fixture and the labels, in the same sitting, with the answer
-already decided. The precision/recall figures this test asserts (1.0/1.0)
-are therefore a statement about the code path, not about detection quality.
-`detection.py`'s real confirm pass (`default_llm_confirm` / Haiku) has never
-been executed — there is no ANTHROPIC_API_KEY configured, and even once
-there is, this fixture is self-authored synthetic text, not a real book.
-See PROGRESS.md's Phase 3 correction for the full explanation of why this
-distinction matters and what would actually validate detection accuracy.
+`test_detection_precision_and_recall_against_labelled_spans` is the REAL
+P3 gate: it makes a real batched call to whatever `config/llm_routing.yaml`
+routes stage "s3_confirm" to (Gemini free tier as of docs/adr/0006) and
+reports actual precision/recall — no stub, no stand-in. It's marked
+`@pytest.mark.llm` per the project's testing standard (deselect with
+`pytest -m "not llm"`) since it costs a real API call/request-quota unit
+every time it runs.
+
+The other tests below check plumbing (persistence, section-linking,
+figure_dependency default) using `stub_batch_confirm_fn` from
+`tests/stubs.py`, explicitly opted into per-test via `PF_USE_STUB_LLM=1` —
+see that module's docstring and PROGRESS.md's Phase 3 correction for why
+this distinction is enforced rather than just documented.
 """
 
 from __future__ import annotations
@@ -20,38 +20,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from practice_forge.db.models import SourceProblemORM
-from practice_forge.detection.detection import ConfirmResult
+from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.models.enums import ProblemKind
 from practice_forge.structure.structure import run_structure
+from tests.stubs import stub_batch_confirm_fn
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def _fake_confirm(text: str) -> ConfirmResult:
-    if "qualitatively only" in text:
-        return ConfirmResult(is_problem=False, kind=None)
-    if text.startswith("Problem"):
-        return ConfirmResult(
-            is_problem=True,
-            kind=ProblemKind.EXERCISE,
-            given=["T = 3 kN*m", "outer diameter = 60 mm", "inner diameter = 40 mm"],
-            find=["shear stress at the outer surface"],
-        )
-    return ConfirmResult(
-        is_problem=True,
-        kind=ProblemKind.WORKED_EXAMPLE,
-        given=["T = 2 kN*m", "diameter = 50 mm"],
-        find=["tau_max"],
-    )
-
-
+@pytest.mark.llm
 def test_detection_precision_and_recall_against_labelled_spans(db_session: Session) -> None:
+    """The real gate: no stub. Reports actual precision/recall from a live
+    call to the routed s3_confirm model, untuned against this fixture."""
     labelled = json.loads((FIXTURES / "labelled_spans.json").read_text(encoding="utf-8"))
     ground_truth_positive_pages = {
         span["page_no"] for span in labelled["spans"] if span["is_problem"]
@@ -65,7 +52,9 @@ def test_detection_precision_and_recall_against_labelled_spans(db_session: Sessi
         uploaded_by="test",
     )
     run_structure(db_session, ingest_result.book_id)
-    run_detection_(db_session, ingest_result.book_id, confirm_fn=_fake_confirm)
+
+    confirm_fn = make_default_batch_confirm_fn(job_id="test-p3-gate")
+    run_detection_(db_session, ingest_result.book_id, confirm_fn=confirm_fn)
 
     detected_pages = set(
         db_session.execute(
@@ -86,17 +75,22 @@ def test_detection_precision_and_recall_against_labelled_spans(db_session: Sessi
         else 1.0
     )
 
+    print(f"\nP3 GATE (real LLM, untuned): precision={precision:.3f} recall={recall:.3f}")
+    print(f"  detected pages: {sorted(detected_pages)}")
+    print(f"  ground truth positives: {sorted(ground_truth_positive_pages)}")
+    print(f"  false positives (detected but not real): {sorted(false_positives)}")
+    print(f"  false negatives (missed real problems): {sorted(false_negatives)}")
+
     assert detected_pages <= all_pages, "detected a page not covered by the labelled fixture"
     assert precision >= 0.80, f"precision {precision} (FP pages: {false_positives})"
     assert recall >= 0.80, f"recall {recall} (missed pages: {false_negatives})"
 
-    # This fixture is small and clean enough that the pipeline should hit
-    # both exactly, not just clear the 0.80 bar.
-    assert precision == 1.0
-    assert recall == 1.0
 
+def test_regex_false_positive_is_rejected_by_confirm_pass(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PF_USE_STUB_LLM", "1")
 
-def test_regex_false_positive_is_rejected_by_confirm_pass(db_session: Session) -> None:
     ingest_result = run_ingest(
         db_session,
         FIXTURES / "detection_sample.pdf",
@@ -104,7 +98,7 @@ def test_regex_false_positive_is_rejected_by_confirm_pass(db_session: Session) -
         uploaded_by="test",
     )
     run_structure(db_session, ingest_result.book_id)
-    run_detection_(db_session, ingest_result.book_id, confirm_fn=_fake_confirm)
+    run_detection_(db_session, ingest_result.book_id, confirm_fn=stub_batch_confirm_fn)
 
     page_4_problems = db_session.execute(
         select(SourceProblemORM).where(
@@ -115,7 +109,11 @@ def test_regex_false_positive_is_rejected_by_confirm_pass(db_session: Session) -
     assert page_4_problems == []
 
 
-def test_confirmed_problems_carry_kind_and_given_find(db_session: Session) -> None:
+def test_confirmed_problems_carry_kind_and_given_find(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PF_USE_STUB_LLM", "1")
+
     ingest_result = run_ingest(
         db_session,
         FIXTURES / "detection_sample.pdf",
@@ -123,7 +121,7 @@ def test_confirmed_problems_carry_kind_and_given_find(db_session: Session) -> No
         uploaded_by="test",
     )
     run_structure(db_session, ingest_result.book_id)
-    run_detection_(db_session, ingest_result.book_id, confirm_fn=_fake_confirm)
+    run_detection_(db_session, ingest_result.book_id, confirm_fn=stub_batch_confirm_fn)
 
     exercise = db_session.execute(
         select(SourceProblemORM).where(
@@ -135,3 +133,8 @@ def test_confirmed_problems_carry_kind_and_given_find(db_session: Session) -> No
     assert exercise.given
     assert exercise.find
     assert exercise.figure_dependency.value == "none"
+
+
+def test_stub_confirm_fn_raises_loudly_without_opt_in() -> None:
+    with pytest.raises(RuntimeError, match="PF_USE_STUB_LLM"):
+        stub_batch_confirm_fn(["Example 1.1: some text"])

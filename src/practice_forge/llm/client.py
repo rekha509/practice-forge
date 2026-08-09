@@ -1,13 +1,14 @@
-"""The one wrapper every Anthropic API call in the pipeline goes through.
+"""The one facade every pipeline stage calls through — provider-agnostic.
+Routing (config/llm_routing.yaml) decides which provider+model serves each
+stage; nothing here hardcodes either. See docs/adr/0006: pivoted to the
+Gemini free tier after the Anthropic account turned out to have no billing
+credit. The Anthropic backend is kept fully working — repoint a stage back
+to it in the YAML whenever there's a paid budget again.
 
-Nothing outside this module calls `anthropic.Anthropic()` directly. Retries
-are the SDK's own (configurable `max_retries`; Anthropic's SDKs already
-retry 429/5xx with backoff — hand-rolling that here would just duplicate
-it). Prompt caching is opt-in per call (`cache_system=True`). Every call
-logs one structured JSON line with `job_id`, token counts, and an estimated
-USD cost, and accumulates per-job totals in-process — "what did this book
-cost" is always answerable by summing the logs, or via `cost_for_job`
-within a single pipeline run.
+Every call goes through the rate limiter first (config/llm_routing.yaml's
+`limits` section) — free-tier daily quotas are the binding constraint here,
+not cost. `DailyQuotaExhausted` propagates up uncaught; callers must stop
+cleanly, not swallow it and retry.
 """
 
 from __future__ import annotations
@@ -18,128 +19,105 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-import anthropic
+from practice_forge.config import get_settings
+from practice_forge.llm.backends.anthropic_backend import AnthropicBackend
+from practice_forge.llm.backends.base import Backend
+from practice_forge.llm.backends.gemini_backend import GeminiBackend
+from practice_forge.llm.rate_limiter import RateLimiter
+from practice_forge.llm.routing import RoutingConfig, load_routing
 
 logger = logging.getLogger("practice_forge.llm")
 
-# Per TECH STACK: Haiku for bulk extraction/classification/scoring, Sonnet
-# for figure interpretation (vision), Opus for solving/variant generation/
-# code generation (extended thinking).
-HAIKU = "claude-haiku-4-5"
-SONNET = "claude-sonnet-5"
-OPUS = "claude-opus-5"
-
-# USD per million tokens (input, output). List/standard pricing, not the
-# temporary Claude Sonnet 5 introductory rate (expires 2026-08-31) — using
-# list price means this table doesn't silently under-report cost once that
-# window closes. Cache write (5-minute TTL) is ~1.25x input; cache read is
-# ~0.1x input (Anthropic's published multipliers, applied here rather than
-# hardcoding a second table per model).
-_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
-    HAIKU: (1.00, 5.00),
-    SONNET: (3.00, 15.00),
-    OPUS: (5.00, 25.00),
+# USD per million tokens — Anthropic only. Gemini free tier is $0; its
+# tokens are still logged (extra_tokens/input_tokens/output_tokens) for RPD
+# visibility, which is what actually matters on that provider.
+_ANTHROPIC_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-5": (3.00, 15.00),
+    "claude-opus-5": (5.00, 25.00),
 }
-_CACHE_WRITE_MULTIPLIER = 1.25
-_CACHE_READ_MULTIPLIER = 0.10
 
 
 @dataclass(frozen=True)
 class LLMResponse:
     text: str
     stop_reason: str | None
+    provider: str
+    model: str
     input_tokens: int
     output_tokens: int
-    cache_creation_input_tokens: int
-    cache_read_input_tokens: int
+    extra_tokens: int
     cost_usd: float
 
 
-class LLMRefusalError(RuntimeError):
-    """Raised when the model declines for safety reasons (`stop_reason ==
-    "refusal"`) rather than returning content. Callers must not treat this
-    like an empty/low-confidence result — it means the classifier fired,
-    not that there was nothing to find."""
-
-
-def _estimate_cost_usd(
-    model: str,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cache_creation_input_tokens: int,
-    cache_read_input_tokens: int,
-) -> float:
-    input_price, output_price = _PRICING_PER_MTOK[model]
-    return (
-        input_tokens * input_price
-        + output_tokens * output_price
-        + cache_creation_input_tokens * input_price * _CACHE_WRITE_MULTIPLIER
-        + cache_read_input_tokens * input_price * _CACHE_READ_MULTIPLIER
-    ) / 1_000_000
+def _estimate_cost_usd(provider: str, model: str, input_tokens: int, output_tokens: int) -> float:
+    if provider != "anthropic":
+        return 0.0
+    input_price, output_price = _ANTHROPIC_PRICING_PER_MTOK.get(model, (0.0, 0.0))
+    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
 
 
 class LLMClient:
-    def __init__(self, api_key: str | None = None, max_retries: int = 2) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key or None, max_retries=max_retries)
+    def __init__(
+        self,
+        *,
+        routing: RoutingConfig | None = None,
+        rate_limiter: RateLimiter | None = None,
+        anthropic_api_key: str | None = None,
+        gemini_api_key: str | None = None,
+    ) -> None:
+        settings = get_settings()
+        self._routing = routing or load_routing()
+        self._rate_limiter = rate_limiter or RateLimiter()
+        self._backends: dict[str, Backend] = {}
+        self._anthropic_api_key = anthropic_api_key or settings.anthropic_api_key
+        self._gemini_api_key = gemini_api_key or settings.gemini_api_key
         self._job_costs_usd: dict[str, float] = defaultdict(float)
 
     def cost_for_job(self, job_id: str) -> float:
         return self._job_costs_usd[job_id]
 
+    def _backend_for(self, provider: str) -> Backend:
+        if provider not in self._backends:
+            if provider == "gemini":
+                if not self._gemini_api_key:
+                    raise RuntimeError("GEMINI_API_KEY is not configured")
+                self._backends[provider] = GeminiBackend(self._gemini_api_key)
+            elif provider == "anthropic":
+                self._backends[provider] = AnthropicBackend(self._anthropic_api_key or None)
+            else:
+                raise ValueError(f"Unknown provider {provider!r} in llm_routing.yaml")
+        return self._backends[provider]
+
     def complete(
         self,
         *,
-        model: str,
-        messages: list[dict[str, Any]],
-        max_tokens: int,
+        stage: str,
+        prompt: str,
         job_id: str,
         system: str | None = None,
-        thinking: bool = False,
-        effort: str | None = None,
-        cache_system: bool = False,
+        max_tokens: int = 2048,
         output_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """One call, fully accounted. `thinking=True` sets adaptive thinking
-        (Opus 5 only needs this to be explicit for documentation purposes —
-        it's already on by default). `output_schema` requests structured
-        JSON output via `output_config.format` instead of hoping the model's
-        prose happens to parse."""
-        kwargs: dict[str, Any] = {}
+        route = self._routing.route_for(stage)
+        limits = self._routing.limits_for(route.provider, route.model)
 
-        if system is not None:
-            if cache_system:
-                kwargs["system"] = [
-                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-                ]
-            else:
-                kwargs["system"] = system
+        # Raises DailyQuotaExhausted uncaught on a spent daily quota — no
+        # retry loop here, by design (see module docstring).
+        self._rate_limiter.acquire(route.provider, route.model, limits)
 
-        if thinking:
-            kwargs["thinking"] = {"type": "adaptive"}
-
-        output_config: dict[str, Any] = {}
-        if effort is not None:
-            output_config["effort"] = effort
-        if output_schema is not None:
-            output_config["format"] = {"type": "json_schema", "schema": output_schema}
-        if output_config:
-            kwargs["output_config"] = output_config
-
-        response = self._client.messages.create(
-            model=model,
+        backend = self._backend_for(route.provider)
+        result = backend.complete(
+            model=route.model,
+            prompt=prompt,
             max_tokens=max_tokens,
-            messages=messages,  # type: ignore[arg-type]  # plain dicts, structurally a MessageParam
-            **kwargs,
+            system=system,
+            output_schema=output_schema,
+            thinking_budget=route.thinking_budget,
         )
 
-        usage = response.usage
         cost_usd = _estimate_cost_usd(
-            model,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
-            cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+            route.provider, route.model, result.input_tokens, result.output_tokens
         )
         self._job_costs_usd[job_id] += cost_usd
 
@@ -147,30 +125,29 @@ class LLMClient:
             json.dumps(
                 {
                     "job_id": job_id,
-                    "model": model,
-                    "stop_reason": response.stop_reason,
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "cache_creation_input_tokens": usage.cache_creation_input_tokens or 0,
-                    "cache_read_input_tokens": usage.cache_read_input_tokens or 0,
+                    "stage": stage,
+                    "provider": route.provider,
+                    "model": route.model,
+                    "stop_reason": result.stop_reason,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "extra_tokens": result.extra_tokens,
                     "cost_usd": round(cost_usd, 6),
-                    "job_cost_usd_running_total": round(self._job_costs_usd[job_id], 6),
+                    "requests_used_today": self._rate_limiter.used_today(
+                        route.provider, route.model
+                    ),
+                    "rpd_limit": limits.rpd,
                 }
             )
         )
 
-        if response.stop_reason == "refusal":
-            raise LLMRefusalError(
-                f"model {model} declined (job_id={job_id}); see stop_details for category"
-            )
-
-        text = "".join(block.text for block in response.content if block.type == "text")
         return LLMResponse(
-            text=text,
-            stop_reason=response.stop_reason,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
-            cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+            text=result.text,
+            stop_reason=result.stop_reason,
+            provider=route.provider,
+            model=route.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            extra_tokens=result.extra_tokens,
             cost_usd=cost_usd,
         )

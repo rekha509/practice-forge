@@ -36,3 +36,11 @@ means dedup can be exercised (and tested) with zero Anthropic cost.
   blocks); this will need an LLM pass over the first few pages before it's
   reliable on real books. Tracked as a known gap, not blocking Phase 2's
   gate, which only needs metadata good enough to prove the matching logic.
+
+## Update (docs/adr/0006)
+When marker-pdf actually replaces this placeholder, run it **without**
+`--use_llm`. Since the Gemini free-tier pivot (docs/adr/0006), every LLM
+call competes for the same scarce daily request budget across the whole
+pipeline — spending part of it on LLM-assisted extraction, a stage that
+doesn't need it as urgently as classification/scoring/solving do, isn't
+worth it. Plain local marker output is the intended integration point.
