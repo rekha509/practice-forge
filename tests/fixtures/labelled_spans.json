@@ -1,0 +1,14 @@
+{
+  "book_fixture": "detection_sample.pdf",
+  "discipline": "mechanical",
+  "note": "Page 4 is a deliberate regex false-positive: it matches the 'Example N.M' heading pattern but is not a solvable problem. The LLM confirm pass must reject it for precision to hit 1.0.",
+  "spans": [
+    {"page_no": 1, "is_problem": false},
+    {"page_no": 2, "is_problem": false},
+    {"page_no": 3, "is_problem": false},
+    {"page_no": 4, "is_problem": false},
+    {"page_no": 5, "is_problem": true, "kind": "worked_example"},
+    {"page_no": 6, "is_problem": true, "kind": "exercise"},
+    {"page_no": 7, "is_problem": false}
+  ]
+}

@@ -7,14 +7,18 @@
 from __future__ import annotations
 
 import getpass
+import uuid
 from pathlib import Path
 
 import typer
 
 from practice_forge.db.base import session_scope
+from practice_forge.detection.detection import make_default_confirm_fn
+from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.profiles.loader import list_profiles, load_profile
-from practice_forge.profiles.sync import sync_disciplines
+from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
+from practice_forge.structure.structure import run_structure
 
 app = typer.Typer(name="pf", help="Generate execution-verified engineering practice problem sets.")
 profiles_app = typer.Typer(help="Inspect discipline profiles.")
@@ -37,9 +41,10 @@ def profiles_show(key: str) -> None:
 
 @profiles_app.command("sync")
 def profiles_sync() -> None:
-    """Upsert profiles/*.yaml into the disciplines table."""
+    """Upsert profiles/*.yaml into the disciplines and topic_nodes tables."""
     with session_scope() as session:
         synced = sync_disciplines(session)
+        sync_topic_nodes(session)
     for profile in synced:
         typer.echo(f"synced {profile.key}")
 
@@ -70,6 +75,28 @@ def ingest(
         typer.echo(f"dedup hit ({result.dedup_hit}) - reusing book_id={result.book_id}")
     else:
         typer.echo(f"ingested book_id={result.book_id}, {result.pages_ingested} pages")
+
+
+@app.command()
+def structure(book_id: str) -> None:
+    """Detect chapter/section boundaries and map them onto topic nodes (S2)."""
+    with session_scope() as session:
+        sections = run_structure(session, uuid.UUID(book_id))
+    for section in sections:
+        typer.echo(f"pages {section.page_start}-{section.page_end}: {section.title}")
+
+
+@app.command()
+def detect(book_id: str) -> None:
+    """Detect worked examples/exercises via regex candidates + an LLM
+    confirm pass, persisted as SourceProblem rows (S3). Requires structure
+    (S2) to have run first and ANTHROPIC_API_KEY to be set."""
+    confirm_fn = make_default_confirm_fn(job_id=f"detect-{book_id}")
+    with session_scope() as session:
+        problems = run_detection_(session, uuid.UUID(book_id), confirm_fn=confirm_fn)
+    for problem in problems:
+        typer.echo(f"page {problem.page_no}: {problem.kind.value}")
+    typer.echo(f"{len(problems)} problems detected")
 
 
 @app.command()

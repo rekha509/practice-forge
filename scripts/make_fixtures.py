@@ -89,7 +89,31 @@ def main() -> None:
     ]
     _write_pdf(FIXTURES_DIR / "other_book.pdf", other_title, other_body)
 
-    print("wrote sample.pdf, sample_rescan.pdf, other_book.pdf")
+    # Phase 3 (S3 problem detection) fixture. Deliberately includes a case
+    # designed to trip the regex layer into a false candidate (a page whose
+    # first line matches "Example N.M" but isn't actually a solvable
+    # problem) so the LLM-confirm step has something real to reject —
+    # see tests/fixtures/labelled_spans.json for the ground truth this is
+    # checked against.
+    detection_title = "Title: Strength of Materials\nAuthor: R.S. Khurmi, N. Khurmi\nEdition: 3rd Edition\n"
+    detection_body = [
+        "Chapter 6: Torsion of Shafts",
+        "Torsion is a classic problem in mechanical design, arising whenever "
+        "a shaft transmits power through rotation.",
+        "Example 6.1 illustrates a common misconception about shaft "
+        "stiffness and is discussed qualitatively only; no numerical "
+        "solution is given here.",
+        "Example 6.2: A solid circular shaft of diameter 50 mm transmits a "
+        "torque of 2 kN*m. Determine the maximum shear stress tau_max in "
+        "the shaft, given that tau_max = T r / J.",
+        "Problem 6.5: A hollow circular shaft has outer diameter 60 mm and "
+        "inner diameter 40 mm, and carries a torque of 3 kN*m. Find the "
+        "shear stress at the outer surface.",
+        "Chapter 7: Fluid Mechanics",
+    ]
+    _write_pdf(FIXTURES_DIR / "detection_sample.pdf", detection_title, detection_body)
+
+    print("wrote sample.pdf, sample_rescan.pdf, other_book.pdf, detection_sample.pdf")
 
 
 if __name__ == "__main__":
