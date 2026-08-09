@@ -3,6 +3,10 @@ __pycache__/
 .venv/
 venv/
 .env
+*.env
+!.env.example
+desktop.ini
+Thumbs.db
 *.egg-info/
 dist/
 build/
