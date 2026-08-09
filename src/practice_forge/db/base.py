@@ -33,6 +33,13 @@ def get_session_factory() -> sessionmaker[Session]:
     return _session_factory
 
 
+def make_session_factory(database_url: str) -> sessionmaker[Session]:
+    """A session factory bound to an arbitrary URL, independent of the
+    process-wide singleton engine — used by tests/conftest.py so pytest's
+    database is never the same one real ingested data lives in."""
+    return sessionmaker(bind=create_engine(database_url, pool_pre_ping=True), expire_on_commit=False)
+
+
 @contextmanager
 def session_scope() -> Iterator[Session]:
     session = get_session_factory()()

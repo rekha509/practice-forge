@@ -21,6 +21,15 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://practice_forge:practice_forge@localhost:5432/practice_forge",
         alias="DATABASE_URL",
     )
+    # Separate DB for pytest's db_session fixture, which truncates tables
+    # wholesale at setup — pointed at DATABASE_URL, that destroys any real
+    # ingested content sharing the same database (hit this for real: the
+    # first attempt at ingesting a real textbook this session was wiped out
+    # by an unrelated `pytest tests/` run in between). See tests/conftest.py.
+    test_database_url: str = Field(
+        default="postgresql+psycopg://practice_forge:practice_forge@localhost:5432/practice_forge_test",
+        alias="TEST_DATABASE_URL",
+    )
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     docker_host: str = Field(default="", alias="DOCKER_HOST")
 

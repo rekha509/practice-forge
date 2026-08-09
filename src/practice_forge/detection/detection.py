@@ -10,9 +10,9 @@ The confirm step is dependency-injected (`confirm_fn`) rather than reaching
 for a module-level LLMClient: unit tests supply a deterministic fake (per
 the testing standard — never let a unit test hit the API), and
 `make_default_batch_confirm_fn` is the real implementation callers wire up
-in production. Figure interpretation (S4) hasn't landed yet, so every
-persisted SourceProblem here gets figure_dependency=NONE — a problem this
-naive regex pass would flag as figure-dependent is out of scope until then.
+in production. `figure_dependency` starts at NONE for every persisted row
+here and is classified by a separate pass (`figures.run_figure_descope`,
+S4 — see docs/adr/0007), not by this module.
 """
 
 from __future__ import annotations
@@ -34,6 +34,18 @@ from practice_forge.llm.client import LLMClient
 from practice_forge.models.enums import FigureDependency, ProblemKind
 
 BATCH_SIZE = 20
+
+# Safety cap on a single candidate's span. Found live on tests/fixtures/
+# nag_real.pdf: this book's end-of-chapter exercises are a numbered list
+# ("5.1 ...", "5.2 ...") under one "PROBLEMS" section header, never
+# repeating the word "Problem" per item — so _EXERCISE_PATTERN doesn't
+# segment them individually, and the span from the last matched heading to
+# end-of-book swallows the whole exercise list as one candidate (observed:
+# 14000+ characters). Truncating avoids burning a batch's token budget on
+# one degenerate item; it does NOT fix under-segmentation of that book's
+# exercise list — tracked as a known gap (see PROGRESS.md), not silently
+# hidden.
+MAX_CANDIDATE_CHARS = 4000
 
 _WORKED_EXAMPLE_PATTERN = re.compile(r"^(Example|Illustrative Example)\s+\d+\.\d+", re.IGNORECASE)
 _EXERCISE_PATTERN = re.compile(r"^Problem\s+\d+\.\d+", re.IGNORECASE)
@@ -78,16 +90,35 @@ BatchConfirmFn = Callable[[list[str]], list[ConfirmResult | None]]
 
 
 def detect_candidates(pages: list[tuple[int, str]]) -> list[Candidate]:
-    candidates: list[Candidate] = []
+    """Scans every line across the whole book, not just each page's first
+    line. On a real (scanned/OCR'd) book, a heading like "Example 5.1" is
+    routinely a few lines into a page — after a running header/footer the
+    OCR pass captured as ordinary text — and a page can hold more than one
+    example (verified on tests/fixtures/nag_real.pdf: pages with two
+    consecutive "Example N.M" headings exist). A candidate's span runs from
+    its heading line to the next heading (of any kind), which may fall on
+    a later page — real problems routinely cross a page break.
+    """
+    flat_lines: list[tuple[int, str]] = []
     for page_no, text in pages:
-        stripped = text.strip()
-        if not stripped:
-            continue
-        first_line = stripped.splitlines()[0]
-        if _WORKED_EXAMPLE_PATTERN.match(first_line):
-            candidates.append(Candidate(page_no, ProblemKind.WORKED_EXAMPLE, stripped))
-        elif _EXERCISE_PATTERN.match(first_line) or _EXERCISE_SECTION_PATTERN.match(first_line):
-            candidates.append(Candidate(page_no, ProblemKind.EXERCISE, stripped))
+        for line in text.splitlines():
+            stripped_line = line.strip()
+            if stripped_line:
+                flat_lines.append((page_no, stripped_line))
+
+    headings: list[tuple[int, ProblemKind]] = []
+    for i, (_, line) in enumerate(flat_lines):
+        if _WORKED_EXAMPLE_PATTERN.match(line):
+            headings.append((i, ProblemKind.WORKED_EXAMPLE))
+        elif _EXERCISE_PATTERN.match(line) or _EXERCISE_SECTION_PATTERN.match(line):
+            headings.append((i, ProblemKind.EXERCISE))
+
+    candidates: list[Candidate] = []
+    for idx, (start_i, kind_guess) in enumerate(headings):
+        end_i = headings[idx + 1][0] if idx + 1 < len(headings) else len(flat_lines)
+        span_text = "\n".join(line for _, line in flat_lines[start_i:end_i])[:MAX_CANDIDATE_CHARS]
+        page_no = flat_lines[start_i][0]
+        candidates.append(Candidate(page_no, kind_guess, span_text))
     return candidates
 
 
