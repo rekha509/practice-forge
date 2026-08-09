@@ -12,6 +12,7 @@ from pathlib import Path
 
 import typer
 
+from practice_forge.concepts.concepts import run_concept_distillation
 from practice_forge.db.base import session_scope
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
@@ -127,6 +128,17 @@ def generate(
         err=True,
     )
     raise typer.Exit(code=1)
+
+
+@app.command()
+def distill(book_id: str) -> None:
+    """S5: concept distillation, fingerprinting, and clustering over every
+    is_solvable SourceProblem for this book. Real batched Gemini call."""
+    with session_scope() as session:
+        result = run_concept_distillation(session, uuid.UUID(book_id), job_id=f"distill-{book_id}")
+    typer.echo(f"distilled: {result['distilled']}")
+    typer.echo(f"LaTeX parse failures: {result['parse_failures']}")
+    typer.echo(f"clusters: {result['clusters']}")
 
 
 if __name__ == "__main__":

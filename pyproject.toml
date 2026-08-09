@@ -23,6 +23,7 @@ dependencies = [
     "pint>=0.24",
     "numpy>=1.26",
     "sympy>=1.12",
+    "antlr4-python3-runtime==4.11",  # required by sympy.parsing.latex.parse_latex
     "scipy>=1.13",
     "matplotlib>=3.9",
     "datasketch>=1.6",
@@ -57,7 +58,7 @@ exclude = ["tests/fixtures", "code/", "scripts/"]
 
 # docker-py and datasketch ship no py.typed marker / stub package.
 [[tool.mypy.overrides]]
-module = ["docker", "docker.*", "datasketch", "datasketch.*"]
+module = ["docker", "docker.*", "datasketch", "datasketch.*", "sympy", "sympy.*"]
 ignore_missing_imports = true
 # No py.typed marker; mypy still walks docker's untyped source (rather than
 # treating the import as opaque) and trips over its dynamic re-exports

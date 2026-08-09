@@ -142,8 +142,11 @@ def default_llm_confirm_batch(
     candidates_block = "\n---\n".join(
         f"[index {i}]\n{text}" for i, text in enumerate(candidate_texts)
     )
-    prompt = _CONFIRM_PROMPT_PATH.read_text(encoding="utf-8").format(
-        candidates_block=candidates_block
+    # .replace(), not .format(): candidate text can itself contain literal
+    # `{`/`}` (LaTeX, OCR artifacts), which .format() misparses as
+    # placeholders — found live on real content (see docs/adr for detail).
+    prompt = _CONFIRM_PROMPT_PATH.read_text(encoding="utf-8").replace(
+        "{candidates_block}", candidates_block
     )
 
     items, _response = call_batch(

@@ -39,8 +39,11 @@ from practice_forge.models.enums import (
     VerificationStatus,
 )
 
-# BGE-M3 dense embedding dimension.
-EMBEDDING_DIM = 1024
+# Gemini's gemini-embedding-001, not BGE-M3 (see docs/adr/0008) - active
+# provider is Gemini free tier (docs/adr/0006), and this is the real
+# embedding dimension for the model actually in use: verified live
+# (client.models.embed_content), not assumed.
+EMBEDDING_DIM = 3072
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
