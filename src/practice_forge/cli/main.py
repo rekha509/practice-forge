@@ -15,6 +15,7 @@ import typer
 from practice_forge.db.base import session_scope
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
+from practice_forge.figures.figures import run_figure_descope
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.profiles.loader import list_profiles, load_profile
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
@@ -98,6 +99,18 @@ def detect(book_id: str) -> None:
     for problem in problems:
         typer.echo(f"page {problem.page_no}: {problem.kind.value}")
     typer.echo(f"{len(problems)} problems detected")
+
+
+@app.command()
+def figures(book_id: str) -> None:
+    """S4, descoped for v1 (see docs/adr/0007): classifies figure_dependency
+    from problem text alone and excludes ESSENTIAL problems
+    (is_solvable=False). No figure interpretation — detect and exclude
+    only."""
+    with session_scope() as session:
+        counts = run_figure_descope(session, uuid.UUID(book_id))
+    typer.echo(f"figure_dependency=none: {counts['none']}")
+    typer.echo(f"figure_dependency=essential (excluded): {counts['essential_excluded']}")
 
 
 @app.command()
