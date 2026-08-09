@@ -1,5 +1,24 @@
 ## Current Phase: 3 — Structure + problem detection
-## Status: complete
+## Status: complete, WITH A CORRECTED CLAIM — read this before trusting anything below about detection accuracy
+
+**Correction (caught by user review, not self-caught):** the line below that
+used to read "precision 1.0, recall 1.0 ... against the labelled fixture"
+overstated what was actually verified. `tests/fixtures/sample.pdf`,
+`detection_sample.pdf`, and `labelled_spans.json` were all authored by me —
+synthetic text, not a real book, hand-labelled by me reading my own fixture.
+That much is fine (the labels weren't copied from the detector's output, so
+it isn't circular in that specific sense). The real problem: the "confirm
+pass" the test measures is `_fake_confirm` in `tests/test_detection.py`, a
+hand-written function I wrote — in the same sitting, with the labels already
+decided — to string-match this exact fixture's exact phrases (`"qualitatively
+only"`, a `"Problem"` prefix). It is not the real LLM; no API key means the
+real Haiku confirm call has never once executed. So "precision 1.0, recall
+1.0" is a true statement about the test harness (regex candidates -> confirm
+-> persist -> score, wired correctly) and tells you **nothing** about
+whether the real S3 pipeline hits 80% precision/recall on real, unseen
+textbook content. Treat Phase 3's gate as "plumbing verified," not "detection
+accuracy validated," until there's a real API key and/or real textbook text
+to test against.
 
 ## Completed
 - [x] Phase 1 (Scaffold) and Phase 2 (S1 ingest + dedup) — both gates green, see prior entries in git log (`4ccf80e`, `888ca47`, `1c46116`) for full detail.
@@ -10,7 +29,7 @@
 - [x] S3 problem detection — `src/practice_forge/detection/detection.py`: regex candidates (`Example N.M`, `Problem N.M`, `PROBLEMS`/`EXERCISES`) + an LLM confirm pass (Haiku, structured JSON output) into `SourceProblem` rows. The confirm step is dependency-injected (`confirm_fn` param, no default) specifically so unit tests supply a deterministic fake and never hit the API — `make_default_confirm_fn` wires the real `LLMClient` for CLI/production use. Every persisted row gets `figure_dependency=NONE` (Phase 4 hasn't landed).
 - [x] `pf structure <book_id>` and `pf detect <book_id>` CLI commands wired (structure is fully offline; detect needs `ANTHROPIC_API_KEY`).
 - [x] Two new fixtures: `tests/fixtures/detection_sample.pdf` (via `scripts/make_fixtures.py`, extended) with a deliberate regex-false-positive page (`Example 6.1` heading that isn't actually a solvable problem) so the LLM-confirm rejection path is genuinely exercised, not just the accept path; `tests/fixtures/labelled_spans.json` ground truth for it.
-- [x] **Phase 3 gate GREEN**: `pytest tests/test_detection.py` — precision 1.0, recall 1.0 (both well over the required >= 0.80) against the labelled fixture, including correctly rejecting the false-positive page. Plus `tests/test_structure.py` (7 tests, pure-function unit tests for section detection + topic matching). Full suite: `pytest tests/` → 20/20 passed. `ruff check src/ tests/` and `mypy --strict src/practice_forge` both clean.
+- [x] **Phase 3 gate GREEN in the narrow sense**: `pytest tests/test_detection.py` passes, proving regex-candidate-detection -> confirm-step -> persistence -> precision/recall-scoring plumbing is wired correctly (precision 1.0, recall 1.0 *against the hand-written fake confirm* — see the correction at the top of this file for why that number doesn't mean what it sounds like). Plus `tests/test_structure.py` (7 tests, pure-function unit tests for section detection + topic matching). Full suite: `pytest tests/` → 20/20 passed. `ruff check src/ tests/` and `mypy --strict src/practice_forge` both clean.
 - [x] `docs/adr/0005` — keyword-overlap topic-matching is a documented placeholder, not a claimed-accurate solution.
 
 ## Next Immediate Task
@@ -25,9 +44,10 @@ Start Phase 4 (S4 Figures): for `SourceProblem` rows with `figure_dependency == 
 - `figure_dependency` is NOT classified by S3 yet, even though the `SourceProblem` schema has the field and S4 depends on it being populated. Every row S3 persists right now gets `NONE`. Recorded here explicitly as a real gap (not a deferred nice-to-have) — see Next Immediate Task and Known Issues.
 
 ## Blocked On
-Nothing for what's built. Flagging again since it's still true: `ANTHROPIC_API_KEY` in `.env` is still blank, so `pf detect` (the real, non-test-mocked path through `make_default_confirm_fn`) has never actually been run against the live API — only the fake-confirm-fn path (which is what the gate tests) has been verified. The real path is not exercised by anything in this repo yet.
+Nothing for what's built, but be precise about what "built" means here: `ANTHROPIC_API_KEY` in `.env` is still blank, so `pf detect` (the real path through `make_default_confirm_fn` -> `LLMClient` -> actual Haiku call) has **never once executed**. Every claim about S3's detection quality rests entirely on `_fake_confirm`, a hand-written stand-in I wrote to match this one synthetic fixture. There is currently zero evidence — not "weak evidence," zero — that the real regex+LLM pipeline achieves the spec's >= 0.80 precision/recall bar on anything. This needs either a real API key (to test the real confirm call, even against synthetic text) or real textbook content (to test against something that isn't self-authored) before that claim can be made honestly.
 
 ## Known Issues
+- **The S3 detection-quality gate is unvalidated against the real LLM — see the correction at the top of this file.** Don't cite "precision 1.0, recall 1.0" from this phase as evidence the detection approach works; it's evidence the code plumbing works.
 - **S3 never sets `figure_dependency` to `decorative`/`essential`, only ever `NONE`.** This is a real correctness gap the spec calls for (S3: "Classify figure_dependency, link figure_ids"), not just an unimplemented later phase — it means every problem detected so far is implicitly assumed figure-free, which will be wrong on a real textbook page containing a beam diagram or circuit schematic next to the problem text. Must be fixed as part of starting Phase 4, since S4's whole job (crop + vision-classify) only applies to problems S3 already flagged as figure-dependent.
 - `detection.py`'s regex candidate patterns (`Example N.M`, `Problem N.M`, `PROBLEMS`/`EXERCISES`) only look at each page's *first line*. A real textbook where a heading appears mid-page (common after marker-pdf's markdown conversion, less common in our one-paragraph-per-page synthetic fixtures) will be missed. Untested against anything but the synthetic fixture — flag before trusting precision/recall numbers on a real book.
 - `structure.py`'s chapter-heading regex only matches `Chapter N[: title]` — no support for numbered subsection headings (`4.1 Simple Bending`), Roman numerals, or non-English chapter markers. Section boundaries on a real book will be coarser (chapter-level only) than the spec's `page_start`/`page_end` granularity probably wants for very long chapters.

@@ -1,10 +1,18 @@
-"""Phase 3 gate: precision and recall of S3 problem detection (regex
-candidates + LLM confirm pass) against tests/fixtures/labelled_spans.json,
-both required >= 0.80. The confirm pass is faked here per the testing
-standard (never let a unit test hit the API) — it exercises the exact
-decision `detection.py`'s real LLM confirm pass has to make: reject a
-regex false-positive (page 4 matches "Example N.M" but isn't solvable),
-accept the two genuine problems.
+"""Phase 3 plumbing test: proves regex candidates -> confirm step -> persist
+-> precision/recall scoring is wired correctly. It does NOT validate S3's
+real-world detection accuracy.
+
+`_fake_confirm` below is not a proxy for the real LLM confirm pass — it is a
+hand-written function, string-matching this exact fixture's exact phrases
+("qualitatively only", a "Problem" prefix), written by the same person who
+wrote the fixture and the labels, in the same sitting, with the answer
+already decided. The precision/recall figures this test asserts (1.0/1.0)
+are therefore a statement about the code path, not about detection quality.
+`detection.py`'s real confirm pass (`default_llm_confirm` / Haiku) has never
+been executed — there is no ANTHROPIC_API_KEY configured, and even once
+there is, this fixture is self-authored synthetic text, not a real book.
+See PROGRESS.md's Phase 3 correction for the full explanation of why this
+distinction matters and what would actually validate detection accuracy.
 """
 
 from __future__ import annotations
