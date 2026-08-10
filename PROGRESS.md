@@ -1,5 +1,5 @@
-## Current Phase: 6 — S1-S7 complete end-to-end on the real, recall-fixed, retagged pool
-## Status: full real pipeline run complete (328 confirmed, 292 solvable/distilled/scored). 5 of 8 S7 hard constraints now pass (up from 2/8 at the first real run) — 3 real, disclosed failures remain. See bottom-most section for the latest (2026-08-10); sections above it are earlier, superseded-scale runs kept for history.
+## Current Phase: 7 — S7 selection real and fully passing; starting S8/S9
+## Status: S7's selection algorithm bug fixed (was plain top-N, not constrained) — all 7 real hard constraints now PASS with zero relaxation needed, on the real 288-card pool. Moving to S8 (variant generation) and S9 Part A (core solver + execution verification). See bottom-most section for the latest (2026-08-10); sections above it are earlier, superseded-scale runs kept for history.
 
 **Everything in this run is real.** No synthetic textbook content, no
 hand-tuned fixtures, no stub satisfying a gate. Every number below comes
@@ -288,3 +288,26 @@ Not all 8 hard constraints pass yet — 3 real, disclosed gaps remain, all needi
 3. **8-12 with eligible extensions**: consistently over-eligible (19-20 out of ~20-51 across every run so far) — worth checking whether `eligible_extension_types_for`'s deterministic gating logic is too permissive, or whether the target window itself needs revisiting.
 4. **cosine >= 0.85 pair**: one near-duplicate survives selection (0.885) — `_check_hard_constraints`'s diversity check may need to run as an actual selection filter rather than a post-hoc report.
 Recommend the user weigh in on 1-3 (product/taxonomy decisions) before more code changes — this isn't a "keep fixing bugs" situation anymore, it's "decide what correct looks like" for a handful of real, understood tradeoffs.
+
+## Completed: S7 selection fixed for real; all 7 hard constraints pass (2026-08-10, same day)
+
+Explicit instruction, four parts, all landed:
+
+1. **Eligible-extensions COUNT removed as an S7 hard constraint.** Correct per the user's own diagnosis: eligibility is a pool property (S6, unchanged), attachment is an S9-time decision. `docs/adr/0009` records the correction; the attachment rule itself (attach to <=12 of 20, by highest `ml_extension_potential`, preserving >=3 distinct types) is implemented in the new `variants` module below, not gated into S7.
+2. **Percentile-based difficulty.** `_assign_percentile_difficulty` sorts the whole pool by (the LLM's own label, `composite_score` tiebreak) and slices into thirds by position — no new LLM field, no re-scoring, fixes the clustering structurally.
+3. **The <=3-per-section failure was a real bug, not genuine infeasibility — confirmed by investigation, exactly as flagged as the two possibilities to check.** `run_selection`'s "pool >= target" branch was a plain `sorted(...)[:20]` by score; hard constraints were only ever *checked* after the fact, never *enforced* during construction, despite the code comment and PROGRESS.md both describing "MMR/relaxation logic" as "implemented but never exercised." That description was never accurate — no such logic existed anywhere in the file. Rewrote `_select_with_constraints` to enforce per-section cap, physics-informed cap, and pairwise-cosine cap turn-by-turn during construction. **No documented relaxation order existed anywhere in the repo either** (checked: no spec.md, no CLAUDE.md, no ADR — confirmed via a dedicated search) — defined and recorded one in `docs/adr/0009` since none could be found to follow.
+4. **Audited for other hardcoded-empty-default bugs of the `topic_node_ids=[]` shape.** `assumptions`, `typical_pitfalls`, `given_dimensions`, `eligible_extension_types`, `canonical_equation_srepr` — all confirmed genuinely populated from real LLM output or deterministic computation, not hardcoded. `figure_ids=[]` and `solution_md=None` on `SourceProblemORM` are correctly empty by current design (S4's figure interpretation and any solving step don't exist yet — not bugs, just not-yet-built). **Found one real bug of this shape**: `ConceptClusterORM.centroid_embedding` was set once at cluster creation and never updated when a new card joined an existing cluster — any multi-member cluster carried a stale centroid frozen at its first member's own embedding forever. Fixed (running mean); backfilled the 4 real multi-member clusters that existed.
+
+**Real result after the fix, same 288-card pool, zero relaxation needed:**
+- `[PASS]` >= 6 distinct topics — 9
+- `[PASS]` <= 3 per section — max 3
+- `[PASS]` difficulty mix {easy:6, medium:9, hard:5} — exact match
+- `[PASS]` >= 4 with computational_suitability>=4 — 10
+- `[PASS]` >= 3 distinct extension types — 3
+- `[PASS]` <= 2 physics_informed — 0
+- `[PASS]` no pair with cosine >= 0.85 — max 0.848
+
+**All 7 remaining hard constraints pass, no relaxation applied.** Per explicit instruction, not spending further session time tuning this — moving to S8/S9.
+
+## Next Immediate Task
+Build S8 (variant generation) and S9 Part A (core solver + execution verification) against the real, passing 20-problem selection above. Target: at least one real problem taken all the way through variant generation, code generation, sandbox execution, and a verified numeric answer, this session.
