@@ -16,11 +16,14 @@ one is simply missing).
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from practice_forge.llm.client import LLMClient, LLMResponse
+
+logger = logging.getLogger("practice_forge.llm")
 
 # PEP 695 `def call_batch[T: BaseModel](...)` syntax is a Python 3.12
 # parser feature, not just a mypy/ruff style choice — this host's dev venv
@@ -61,6 +64,28 @@ def call_batch(  # noqa: UP047 - see ItemModelT comment above
     )
 
     results: list[ItemModelT | None] = [None] * expected_count
+
+    if response.stop_reason == "MAX_TOKENS":
+        # Found live at full-book scale (S5, docs/adr history): a model
+        # whose thinking tokens draw from the same budget as visible
+        # output can hit max_tokens mid-JSON-array, which then fails to
+        # parse below and silently zeroes every item in the batch — not a
+        # per-item failure, the WHOLE batch. Loud, not silent: this is the
+        # one stop_reason where "the batch produced nothing" has an
+        # actionable fix (raise max_tokens for this stage) rather than
+        # being an expected shape of LLM output.
+        logger.warning(
+            "call_batch: stage=%s job_id=%s hit MAX_TOKENS (output_tokens=%d "
+            "extra_tokens=%d, budget=%d) — the JSON array is likely truncated "
+            "and this whole batch of %d items may parse to zero results. "
+            "Consider raising max_tokens for this stage.",
+            stage,
+            job_id,
+            response.output_tokens,
+            response.extra_tokens,
+            max_tokens,
+            expected_count,
+        )
 
     try:
         raw_items = json.loads(response.text)

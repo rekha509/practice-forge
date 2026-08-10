@@ -141,7 +141,15 @@ def run_concept_distillation(
             job_id=f"{job_id}-batch{batch_no}",
             item_model=DistillationBatchItem,
             expected_count=len(batch),
-            max_tokens=8192,
+            # Found live at full-book scale: 8192 wasn't enough headroom —
+            # gemini-flash-latest's thinking tokens draw from the SAME
+            # budget as visible output (extra_tokens + output_tokens
+            # landed right at 8192 on the batches that failed), truncating
+            # the JSON array mid-response and silently zeroing every item
+            # in that batch (call_batch can't parse a truncated array).
+            # Confirmed: exactly the 2 batches that hit MAX_TOKENS produced
+            # 0 cards each; every STOP-reason batch parsed fully.
+            max_tokens=16384,
         )
 
         for problem, item in zip(batch, items, strict=True):
