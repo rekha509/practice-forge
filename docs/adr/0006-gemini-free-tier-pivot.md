@@ -99,3 +99,68 @@ Gemini quota increase or spending paid Anthropic credit.
   extraction pass would compete with the pipeline's own stages for the
   same scarce daily request budget, for a stage (raw text extraction) that
   doesn't need it as urgently as classification/scoring/solving do.
+
+## Addendum, 2026-08-10 — real verified caps, and a routing policy correction
+
+The "best-effort... needs correcting" caveat above stopped being theoretical:
+running S5 distillation against the real, recall-fixed 305-problem pool hit
+an actual live 429 after 23 requests to `gemini-flash-latest` today. The
+error body showed the alias now resolves to a **different underlying
+model** than when this ADR was first written — `gemini-3.6-flash` — with a
+**confirmed real free-tier cap of 20 requests/day**, not the ~250 this ADR
+originally carried forward as an estimate. This is exactly the risk named
+above ("`*-latest` aliases can change underneath the pipeline without
+notice") actually materializing, months after the fact, not a new risk.
+
+**What is now actually verified, and what remains an unfalsified assumption
+— stated plainly, not conflated:**
+- `gemini-flash-latest` (→ `gemini-3.6-flash`): **20 requests/day, confirmed
+  live via a real 429** quoting `quotaValue: '20'` for
+  `GenerateRequestsPerDayPerProjectPerModel-FreeTier`. This is a hard
+  number, not an estimate.
+- `gemini-flash-lite-latest`: **never exhausted live** — the highest single-day
+  count reached so far is 132 requests with zero 429s, which is consistent
+  with the original ~1000/day estimate but does not prove it. Treat 1000 as
+  an unfalsified lower-bound-consistent assumption, not a confirmed number,
+  until it's actually exhausted or checked against the account's AI Studio
+  page.
+- `gemini-embedding-001`: still no real number confirmed anywhere (unchanged
+  from the original ADR text below) — the `rpd: 100` in
+  `config/llm_routing.yaml` remains a deliberately conservative, unverified
+  placeholder.
+- `gemini-2.5-pro`'s zero-quota finding above is from this project's
+  original Gemini pivot and has not been re-checked since — given
+  `flash-latest`'s alias target already moved once, it should be
+  re-verified live whenever S8/S9 actually get built, not trusted as
+  still-current.
+
+**Routing policy correction:** every stage was re-examined against what it
+actually needs, not just against quota:
+- **S5 (distillation) moved from `gemini-flash-latest` to
+  `gemini-flash-lite-latest`.** Distillation is schema-bound structured
+  extraction (governing equations, given/find dimensions, method tag) into
+  a strict Pydantic schema — not open-ended reasoning where a model's
+  "thinking" budget earns its cost. `flash-latest`'s real 20/day cap was
+  the *entire reason* distillation needed to span multiple real days on
+  the recall-fixed pool (~31 batches at `BATCH_SIZE=10`); `flash-lite`'s
+  much higher cap removes that bottleneck outright. `BATCH_SIZE` raised
+  10→30 in the same change (see `concepts.py`) since flash-lite's larger
+  effective budget and lack of a competing thinking-token tax comfortably
+  supports bigger batches.
+- **`gemini-flash-latest` and any future working Pro-tier model are now
+  reserved strictly for S8 (variant generation) and S9 (codegen)** — the
+  two stages where reasoning quality directly decides correctness (a
+  wrong-but-plausible generated variant or a subtly-wrong generated
+  solution is a real product failure in a way a slightly-off equation
+  extraction, caught by S5/S6's own downstream checks, is not). Both were
+  already routed there; this addendum makes that a deliberate, stated
+  policy rather than an artifact of "Pro had zero quota so we used Flash."
+- **S2, S3, S6 stay on `gemini-flash-lite-latest`** — TOC parsing, batch
+  confirm, and six-axis scoring are all schema-bound extraction/
+  classification, the same category as S5 above.
+- **`s4_vision`'s routing entry is dead config** — S4 was descoped to a
+  pure-regex, no-LLM-call classifier (`docs/adr/0007`), and grepping `src/`
+  confirms nothing ever calls `stage="s4_vision"`. Left pointed at
+  `flash-lite` for consistency rather than deleted outright, in case
+  figure interpretation is ever actually implemented, but it is not live
+  code today — noted here so it isn't mistaken for an active real cost.

@@ -37,22 +37,40 @@ stages:
     temperature: 0
   s4_vision:
     provider: gemini
-    model: gemini-flash-latest
-    # thinking_budget unset -> model default (adaptive/automatic)
+    model: gemini-flash-lite-latest
+    # Dead config, not a live path: S4 was descoped to pure regex, no LLM
+    # call at all (docs/adr/0007) — nothing in src/ ever routes through
+    # stage="s4_vision". Left here (not deleted) in case figure
+    # interpretation is ever actually implemented; pointed at flash-lite
+    # for consistency with every other schema-bound stage, not flash-latest.
   s5_distillation:
     provider: gemini
-    model: gemini-flash-latest
+    model: gemini-flash-lite-latest
+    # Moved off gemini-flash-latest 2026-08-10 (see docs/adr/0006's
+    # addendum): distillation is schema-bound structured extraction, not
+    # reasoning that benefits from a thinking budget, and flash-latest's
+    # real 20/day cap (confirmed live via a 429, not assumed) was the
+    # entire reason distillation needed to span multiple real days on the
+    # recall-fixed ~305-problem pool. flash-lite's much higher cap removes
+    # that bottleneck outright.
   s6_scoring:
     provider: gemini
     model: gemini-flash-lite-latest
   s8_variant_generation:
     provider: gemini
     model: gemini-flash-latest
-    # No working free-tier Pro model on this account (see above) — routed to
-    # Flash with thinking left on, so it at least gets full reasoning depth.
+    # Deliberately reserved here, not just defaulted here: S8/S9 are the
+    # two stages where reasoning quality directly decides correctness (a
+    # wrong-but-plausible variant or a subtly-wrong generated solution is
+    # a real product failure), unlike S2/S3/S5/S6's schema-bound
+    # extraction/classification. No working free-tier Pro model exists on
+    # this account (see above; re-verify live before ever trusting that
+    # finding again — aliases have already moved once) — Flash with
+    # thinking left on is the deepest reasoning available today.
   s9_codegen:
     provider: gemini
     model: gemini-flash-latest
+    # Same reservation as s8_variant_generation above.
 
 # RPM figures are conservative published free-tier norms for each tier as of
 # this writing — Google doesn't expose per-key limits via the API, only via
@@ -70,11 +88,15 @@ stages:
 # limiter's stale 250 let 23 requests through today before Google's own
 # enforcement rejected the 24th. This is exactly the risk the comment
 # above already warned about (rolling aliases silently repoint to a
-# different real model/quota) — it just actually happened. Any stage
-# routed to gemini-flash-latest at real book scale (S5 distillation: ~31
-# batches for the full book) will now span multiple real days; idempotency
-# (S3/S5/S6, already built) is what makes that resumable rather than a
-# problem.
+# different real model/quota) — it just actually happened. See
+# docs/adr/0006's 2026-08-10 addendum for the full writeup and the
+# resulting routing change (S5 moved off this model).
+#
+# gemini-flash-lite-latest's 1000/day is STILL only an estimate, not a
+# confirmed number like the 20 above — it has never actually been
+# exhausted live. The highest real single-day count survived without a
+# 429 so far is 132 requests, which is consistent with 1000 but doesn't
+# prove it. Don't read the two RPD numbers below as equally solid.
 limits:
   gemini:
     gemini-flash-lite-latest: { rpm: 15, rpd: 1000 }

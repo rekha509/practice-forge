@@ -32,13 +32,15 @@ from practice_forge.llm.sanitize import strip_nul, strip_nul_list
 
 CLUSTER_COSINE_THRESHOLD = 0.92
 
-# Smaller than S3's BATCH_SIZE=20: this stage's per-item schema carries far
-# more free-text fields (equations, assumptions, pitfalls, solution
-# strategy) than S3's confirm pass, so the same item count risks a bigger
-# batch response than max_tokens allows. A single unbatched call for a
-# whole book (as this stage originally did) breaks at real book scale —
-# found live while sizing the 700-page projection, not from a test.
-BATCH_SIZE = 10
+# Raised 10 -> 30 (2026-08-10) alongside moving this stage off
+# gemini-flash-latest onto gemini-flash-lite-latest (see docs/adr/0006's
+# addendum): flash-lite doesn't spend thinking tokens against the same
+# output budget the way flash-latest did, so the same max_tokens covers a
+# bigger batch comfortably — the 10-item batches that hit MAX_TOKENS on
+# flash-latest used ~3800-4200 tokens of pure JSON output plus ~2400-7100
+# more on thinking; 30 items of JSON alone (~11000-13000 tokens estimated)
+# still fits well under max_tokens=16384 with the thinking tax gone.
+BATCH_SIZE = 30
 
 _DISTILLATION_PROMPT_PATH = (
     Path(__file__).resolve().parents[3] / "prompts" / "s5_concept_distillation.md"
