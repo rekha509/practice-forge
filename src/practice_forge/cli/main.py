@@ -26,6 +26,7 @@ from practice_forge.llm.client import LLMClient
 from practice_forge.models.enums import VerificationStatus
 from practice_forge.profiles.loader import list_profiles, load_profile
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
+from practice_forge.render.render import run_render
 from practice_forge.scoring.scoring import run_scoring
 from practice_forge.selection.selection import run_selection
 from practice_forge.structure.structure import run_structure
@@ -255,6 +256,27 @@ def generate(
                 failed += 1
 
     typer.echo(f"generated: {verified + failed}, verified: {verified}, failed: {failed}, skipped: {skipped}")
+
+
+@app.command()
+def render(
+    book: str = typer.Option(..., "--book", help="Book ID to render a problem set for."),
+    out: str = typer.Option("data/generated", "--out", help="Output directory."),
+    title: str = typer.Option("Practice Problem Set", "--title"),
+) -> None:
+    """S10: renders the real, already-verified selected set (S7 + S8/S9)
+    into a student handout PDF, a faculty solutions manual PDF (with
+    execution-verified answers), and a code/ folder of the real generated
+    Python for each problem. No LLM call. Ledger-commit (writing an
+    IssuedLedger row) is not done here — see PROGRESS.md."""
+    book_id = uuid.UUID(book)
+    out_dir = Path(out) / book
+    with session_scope() as session:
+        result = run_render(session, book_id, out_dir, title)
+    typer.echo(f"problems rendered: {result.problem_count}")
+    typer.echo(f"student handout: {result.student_pdf_path}")
+    typer.echo(f"solutions manual: {result.solutions_pdf_path}")
+    typer.echo(f"code folder: {result.code_dir}")
 
 
 @app.command()
