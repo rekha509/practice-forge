@@ -32,6 +32,7 @@ class GeminiBackend:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
         thinking_budget: int | None = None,
+        temperature: float | None = None,
     ) -> BackendResponse:
         config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
         if system is not None:
@@ -43,6 +44,8 @@ class GeminiBackend:
             config_kwargs["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=thinking_budget
             )
+        if temperature is not None:
+            config_kwargs["temperature"] = temperature
 
         response = self._client.models.generate_content(
             model=model,

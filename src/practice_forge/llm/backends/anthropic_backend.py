@@ -34,10 +34,13 @@ class AnthropicBackend:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
         thinking_budget: int | None = None,
+        temperature: float | None = None,
     ) -> BackendResponse:
         kwargs: dict[str, Any] = {}
         if system is not None:
             kwargs["system"] = system
+        if temperature is not None:
+            kwargs["temperature"] = temperature
 
         # Anthropic has no fixed thinking-token-budget concept on current
         # models (removed in favour of adaptive thinking) — bridge the

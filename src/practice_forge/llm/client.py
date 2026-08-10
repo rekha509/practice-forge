@@ -114,6 +114,7 @@ class LLMClient:
             system=system,
             output_schema=output_schema,
             thinking_budget=route.thinking_budget,
+            temperature=route.temperature,
         )
 
         cost_usd = _estimate_cost_usd(

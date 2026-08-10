@@ -28,6 +28,13 @@ stages:
   s3_confirm:
     provider: gemini
     model: gemini-flash-lite-latest
+    # Pinned per explicit instruction to test whether the real run-to-run
+    # confirm variance observed on the full book (84 vs 66 confirmed on an
+    # identical candidate set) is sampling noise (temperature) or an
+    # under-specified prompt. temperature=0 doesn't guarantee bit-for-bit
+    # determinism on every provider/model, but it's the first, cheapest
+    # thing to rule out before concluding the prompt itself is ambiguous.
+    temperature: 0
   s4_vision:
     provider: gemini
     model: gemini-flash-latest

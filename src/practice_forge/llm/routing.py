@@ -18,6 +18,7 @@ class StageRoute(BaseModel):
     provider: str
     model: str
     thinking_budget: int | None = None
+    temperature: float | None = None
 
 
 class RateLimitConfig(BaseModel):

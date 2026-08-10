@@ -29,4 +29,5 @@ class Backend(Protocol):
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
         thinking_budget: int | None = None,
+        temperature: float | None = None,
     ) -> BackendResponse: ...
