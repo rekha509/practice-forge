@@ -9,12 +9,22 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from practice_forge.config import get_settings
 from practice_forge.models.enums import ExtensionType
+
+
+class TopicSpec(BaseModel):
+    name: str
+    # Real terms a book's own section titles use for this topic, matched
+    # via keyword overlap (structure.py's match_topic_nodes) — needed
+    # because a topic's bare name alone rarely overlaps enough with a real
+    # chapter title to clear TOPIC_MATCH_THRESHOLD.
+    aliases: list[str] = []
 
 
 class DisciplineProfile(BaseModel):
@@ -24,7 +34,15 @@ class DisciplineProfile(BaseModel):
     solver_libs: list[str]
     ml_libs: list[str]
     allowed_extension_types: list[ExtensionType]
-    topics: list[str]
+    topics: list[TopicSpec]
+
+    @field_validator("topics", mode="before")
+    @classmethod
+    def _coerce_bare_topic_names(cls, topics: list[Any]) -> list[Any]:
+        # Backward compatible with the original flat `topics: [str, ...]`
+        # form still used by every profile except mechanical.yaml — a bare
+        # string is just a topic with no aliases yet.
+        return [{"name": t} if isinstance(t, str) else t for t in topics]
 
 
 def _profiles_dir() -> Path:

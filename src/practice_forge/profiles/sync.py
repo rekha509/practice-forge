@@ -61,8 +61,8 @@ def sync_topic_nodes(session: Session) -> None:
     Section->TopicNode matching to work)."""
     for profile in list_profiles():
         discipline_id = discipline_id_for_key(profile.key)
-        for topic_name in profile.topics:
-            topic_id = topic_node_id_for(profile.key, topic_name)
+        for topic in profile.topics:
+            topic_id = topic_node_id_for(profile.key, topic.name)
             existing = session.execute(
                 select(TopicNodeORM).where(TopicNodeORM.id == topic_id)
             ).scalar_one_or_none()
@@ -72,9 +72,14 @@ def sync_topic_nodes(session: Session) -> None:
                         id=topic_id,
                         discipline_id=discipline_id,
                         parent_id=None,
-                        name=topic_name,
-                        aliases=[],
+                        name=topic.name,
+                        aliases=topic.aliases,
                         syllabus_code=None,
                     )
                 )
+            else:
+                # Previously never updated an existing row at all (only
+                # `sync_disciplines` did) — aliases added to profiles/*.yaml
+                # after the first sync would silently never take effect.
+                existing.aliases = topic.aliases
     session.flush()

@@ -177,5 +177,9 @@ def run_scoring(
             )
             scored += 1
 
-    session.flush()
+        # Commit per batch, not once at the end — a later batch hitting a
+        # quota wall must not discard earlier batches' already-paid-for
+        # scores (same bug class fixed in detection.py and concepts.py).
+        session.commit()
+
     return {"scored": scored, "candidates": total_candidates}

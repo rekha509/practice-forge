@@ -62,10 +62,23 @@ stages:
 # names. Treat all of these as best-effort defaults — verify against
 # https://aistudio.google.com/rate-limit for this account and correct here,
 # not in code.
+#
+# gemini-flash-latest CORRECTED 2026-08-10, confirmed live, not estimated:
+# a real 429 mid-run showed "gemini-flash-latest" now resolves to a
+# DIFFERENT underlying model than assumed (`gemini-3.6-flash`, per the
+# error body) with a real free-tier cap of 20 requests/day — our own
+# limiter's stale 250 let 23 requests through today before Google's own
+# enforcement rejected the 24th. This is exactly the risk the comment
+# above already warned about (rolling aliases silently repoint to a
+# different real model/quota) — it just actually happened. Any stage
+# routed to gemini-flash-latest at real book scale (S5 distillation: ~31
+# batches for the full book) will now span multiple real days; idempotency
+# (S3/S5/S6, already built) is what makes that resumable rather than a
+# problem.
 limits:
   gemini:
     gemini-flash-lite-latest: { rpm: 15, rpd: 1000 }
-    gemini-flash-latest: { rpm: 10, rpd: 250 }
+    gemini-flash-latest: { rpm: 10, rpd: 20 }
     # gemini-embedding-001 isn't a generate_content model, so it has no
     # "stage" entry above — embedding.py calls limits_for() directly with
     # this (provider, model) pair. No real number for this model has been

@@ -118,9 +118,10 @@ def run_concept_distillation(
     settings = get_settings()
     cards: list[ConceptCardORM] = []
     parse_failures = 0
-    texts_to_embed: list[str] = []
 
     for batch_no, batch in enumerate(_chunked(problems, BATCH_SIZE)):
+        batch_cards: list[ConceptCardORM] = []
+        batch_texts_to_embed: list[str] = []
         problems_block = "\n---\n".join(
             f"[index {i}]\nStatement: {p.statement_md}\n"
             f"Given: {p.given}\nFind: {p.find}\nAnswer: {p.final_answer}"
@@ -179,7 +180,7 @@ def run_concept_distillation(
             name = strip_nul(item.name)
             solution_strategy = strip_nul(item.solution_strategy)
             embed_text = f"{name}. {solution_strategy}. Method: {method_tag}"
-            texts_to_embed.append(embed_text)
+            batch_texts_to_embed.append(embed_text)
 
             card = ConceptCardORM(
                 id=uuid.uuid4(),
@@ -204,15 +205,27 @@ def run_concept_distillation(
                 embedding=[0.0] * 3072,  # placeholder, filled in below
                 source_pages=[problem.page_no],
             )
-            cards.append(card)
+            batch_cards.append(card)
 
-    embeddings = embed_texts(settings.gemini_api_key, texts_to_embed)
-    for card, embedding in zip(cards, embeddings, strict=True):
-        card.embedding = embedding
-        session.add(card)
-    session.flush()
+        # Commit per batch, not once at the end: found live at real
+        # book/quota scale — a later batch hitting the daily quota wall
+        # (DailyQuotaExhausted, or a real 429 if our own configured RPD
+        # was stale) previously discarded every earlier batch's already-
+        # paid-for distillation, same class of bug S3's run_detection had
+        # (see detection.py). Embeddings are computed per batch too (well
+        # under gemini-embedding-001's 100-item cap at BATCH_SIZE=10) so a
+        # batch's cards are fully formed before they're added.
+        if batch_cards:
+            batch_embeddings = embed_texts(settings.gemini_api_key, batch_texts_to_embed)
+            for card, embedding in zip(batch_cards, batch_embeddings, strict=True):
+                card.embedding = embedding
+                session.add(card)
+            session.flush()
+            cards.extend(batch_cards)
+            session.commit()
 
     clusters = _cluster_cards(session, book.discipline_id, cards)
+    session.commit()
 
     return {
         "distilled": len(cards),

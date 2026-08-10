@@ -14,11 +14,83 @@ allowed_extension_types:
   - uncertainty_quantification
   - physics_informed
 
+# aliases: real terms a book's own chapter/section titles use for this
+# topic — bare topic names rarely overlap enough with a real chapter title
+# to clear structure.py's TOPIC_MATCH_THRESHOLD via keyword overlap alone
+# (S7's ">= 6 distinct topics" constraint was reporting 0 before this,
+# since match_topic_nodes had nothing but 7 bare names to match against).
+# Thermodynamics' list is informed by the real 22-chapter TOC of
+# Thermodynamics by P.K. Nag (this project's real reference book) — almost
+# every one of that book's chapters IS a thermodynamics subtopic, so most
+# of them alias onto this ONE node rather than creating additional
+# distinct matches; that's a real, disclosed limitation of this 7-topic
+# taxonomy's granularity for a single-subject book, not something aliasing
+# alone can fix — see PROGRESS.md.
 topics:
-  - Strength of Materials
-  - Thermodynamics
-  - Fluid Mechanics
-  - Theory of Machines
-  - Machine Design
-  - Heat & Mass Transfer
-  - IC Engines
+  - name: Strength of Materials
+    aliases:
+      - Stress and Strain
+      - Deflection of Beams
+      - Torsion
+      - Elasticity
+      - Mechanics of Materials
+  - name: Thermodynamics
+    aliases:
+      - First Law of Thermodynamics
+      - Second Law of Thermodynamics
+      - Entropy
+      - Available Energy
+      - Exergy
+      - Irreversibility
+      - Properties of Pure Substances
+      - Properties of Gases and Gas Mixtures
+      - Thermodynamic Relations
+      - Thermodynamic Equilibrium
+      - Vapour Power Cycles
+      - Gas Power Cycles
+      - Refrigeration Cycles
+      - Psychrometrics
+      - Reactive Systems
+      - Combustion
+      - Statistical Thermodynamics
+      - Kinetic Theory of Gases
+      - Work and Heat Transfer
+  - name: Fluid Mechanics
+    aliases:
+      - Fluid Flow
+      - Compressible Fluid Flow
+      - Bernoulli's Equation
+      - Viscosity
+      - Boundary Layer
+      - Fluid Statics
+  - name: Theory of Machines
+    aliases:
+      - Kinematics of Machinery
+      - Dynamics of Machinery
+      - Gears
+      - Cams
+      - Governors
+      - Balancing
+  - name: Machine Design
+    aliases:
+      - Design of Shafts
+      - Design of Springs
+      - Fatigue Design
+      - Fasteners
+      - Bearings
+  - name: Heat & Mass Transfer
+    aliases:
+      - Conduction
+      - Convection
+      - Radiation
+      - Heat Exchangers
+      - Mass Transfer
+      - Elements of Heat Transfer
+      - Transport Processes
+  - name: IC Engines
+    aliases:
+      - Internal Combustion Engines
+      - Engine Cycles
+      - Combustion Engines
+      - Diesel Engine
+      - Petrol Engine
