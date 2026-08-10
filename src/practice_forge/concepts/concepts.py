@@ -25,7 +25,13 @@ from sqlalchemy.orm import Session
 from practice_forge.concepts.embedding import embed_texts
 from practice_forge.concepts.fingerprint import canonicalize_equation, concept_fingerprint
 from practice_forge.config import get_settings
-from practice_forge.db.models import BookORM, ConceptCardORM, ConceptClusterORM, SourceProblemORM
+from practice_forge.db.models import (
+    BookORM,
+    ConceptCardORM,
+    ConceptClusterORM,
+    SectionORM,
+    SourceProblemORM,
+)
 from practice_forge.llm.batching import call_batch
 from practice_forge.llm.client import LLMClient
 from practice_forge.llm.sanitize import strip_nul, strip_nul_list
@@ -116,6 +122,19 @@ def run_concept_distillation(
     if not problems:
         return {"distilled": 0, "parse_failures": 0, "clusters": 0}
 
+    # ConceptCardORM.topic_node_ids drives S7's ">= 6 distinct topics"
+    # constraint directly (selection.py reads card.topic_node_ids, not
+    # Section.topic_node_ids) — found live: every card was hardcoded to
+    # [] below, so S2's real topic matching never actually reached S7 no
+    # matter how good the taxonomy/aliases got. Deterministic, not
+    # LLM-derived — just inherited from the problem's own Section.
+    section_topics = {
+        s.id: s.topic_node_ids
+        for s in session.execute(
+            select(SectionORM).where(SectionORM.book_id == book_id)
+        ).scalars()
+    }
+
     client = llm_client or LLMClient()
     settings = get_settings()
     cards: list[ConceptCardORM] = []
@@ -190,7 +209,7 @@ def run_concept_distillation(
                 section_id=problem.section_id,
                 source_problem_id=problem.id,
                 name=name,
-                topic_node_ids=[],
+                topic_node_ids=section_topics.get(problem.section_id, []),
                 governing_equations_latex=equations,
                 canonical_equation_srepr=canonical_reprs,
                 assumptions=strip_nul_list(item.assumptions),
