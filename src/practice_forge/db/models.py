@@ -204,6 +204,16 @@ class ConceptCardORM(Base):
     section_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("sections.id"), nullable=False
     )
+    # NOT NULL + UNIQUE, enforced by the DB (migration 0003): a card's
+    # natural identity IS the SourceProblem it was distilled from, and a
+    # nullable/unenforced key can't actually guard idempotency — it would
+    # never match on `WHERE source_problem_id = X` for rows missing it, and
+    # without a UNIQUE constraint a race could still insert two cards for
+    # one problem before either commits. "Zero cards for a problem that
+    # fails to parse" means no row, not a row with a null key.
+    source_problem_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("source_problems.id"), nullable=False, unique=True
+    )
     name: Mapped[str] = mapped_column(String, nullable=False)
     topic_node_ids: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(PG_UUID(as_uuid=True)), nullable=False, default=list

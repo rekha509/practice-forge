@@ -18,13 +18,14 @@ this distinction is enforced rather than just documented.
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from practice_forge.db.models import SourceProblemORM
+from practice_forge.db.models import BookORM, DisciplineORM, PageORM, SectionORM, SourceProblemORM
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.ingest.pipeline import run_ingest
@@ -138,3 +139,67 @@ def test_confirmed_problems_carry_kind_and_given_find(
 def test_stub_confirm_fn_raises_loudly_without_opt_in() -> None:
     with pytest.raises(RuntimeError, match="PF_USE_STUB_LLM"):
         stub_batch_confirm_fn(["Example 1.1: some text"])
+
+
+def test_detection_idempotent_and_preserves_same_page_multi_problem(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two real properties in one test, both load-bearing for the same
+    idempotency fix: (1) re-running detection over already-persisted
+    content must not duplicate rows, and (2) the natural key used to check
+    that must NOT be bare (book_id, page_no) — confirmed live on this
+    book's real page 23, a single page can hold two distinct problems, and
+    a page_no-only key would treat the second one as a duplicate of the
+    first and silently drop it on any re-run."""
+    monkeypatch.setenv("PF_USE_STUB_LLM", "1")
+
+    discipline = db_session.execute(
+        select(DisciplineORM).where(DisciplineORM.key == "mechanical")
+    ).scalar_one()
+    book = BookORM(
+        id=uuid.uuid4(),
+        title="Test Book",
+        authors=[],
+        discipline_id=discipline.id,
+        page_count=1,
+        file_sha256=uuid.uuid4().hex,
+        uploaded_by="test",
+    )
+    db_session.add(book)
+    db_session.flush()
+    section = SectionORM(
+        id=uuid.uuid4(), book_id=book.id, chapter_no=1, title="Ch1", page_start=1, page_end=1
+    )
+    db_session.add(section)
+    # Two worked examples on the SAME page, as real OCR content can hold.
+    page = PageORM(
+        id=uuid.uuid4(),
+        book_id=book.id,
+        page_no=1,
+        markdown=(
+            "Example 1.1: A first worked problem.\nSome body text.\n"
+            "Example 1.2: A second, distinct worked problem.\nMore body text."
+        ),
+        extraction_confidence=1.0,
+    )
+    db_session.add(page)
+    db_session.flush()
+
+    run_detection_(db_session, book.id, confirm_fn=stub_batch_confirm_fn)
+    first_run = (
+        db_session.execute(select(SourceProblemORM).where(SourceProblemORM.book_id == book.id))
+        .scalars()
+        .all()
+    )
+    # Both same-page problems survive as distinct rows.
+    assert len(first_run) == 2
+    assert len({p.statement_md for p in first_run}) == 2
+
+    run_detection_(db_session, book.id, confirm_fn=stub_batch_confirm_fn)
+    second_run = (
+        db_session.execute(select(SourceProblemORM).where(SourceProblemORM.book_id == book.id))
+        .scalars()
+        .all()
+    )
+    assert len(second_run) == len(first_run)
+    assert {p.id for p in second_run} == {p.id for p in first_run}

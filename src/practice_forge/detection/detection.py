@@ -194,6 +194,24 @@ def run_detection(
 
     candidates = detect_candidates([(p.page_no, p.markdown) for p in pages])
 
+    # Idempotency: skip any candidate already persisted for this book.
+    # Natural key is (book_id, page_no, statement_md), NOT bare
+    # (book_id, page_no) — confirmed live on real content that a single
+    # page can hold two distinct problems (this book's page 23 has two),
+    # so page_no alone would treat the second real problem on that page as
+    # a duplicate of the first and silently drop it on any re-run.
+    # Filtering before the confirm call also means a re-run doesn't
+    # re-spend LLM quota reconfirming candidates already persisted.
+    existing_keys = {
+        (row.page_no, row.statement_md)
+        for row in session.execute(
+            select(SourceProblemORM.page_no, SourceProblemORM.statement_md).where(
+                SourceProblemORM.book_id == book_id
+            )
+        )
+    }
+    candidates = [c for c in candidates if (c.page_no, c.text) not in existing_keys]
+
     persisted: list[SourceProblemORM] = []
     for batch in _chunked(candidates, BATCH_SIZE):
         results = confirm_fn([c.text for c in batch])

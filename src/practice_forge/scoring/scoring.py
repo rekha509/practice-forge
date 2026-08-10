@@ -77,7 +77,9 @@ def eligible_extension_types_for(
     return types
 
 
-def run_scoring(session: Session, book_id: uuid.UUID, job_id: str) -> dict[str, int]:
+def run_scoring(
+    session: Session, book_id: uuid.UUID, job_id: str, llm_client: LLMClient | None = None
+) -> dict[str, int]:
     book = session.get(BookORM, book_id)
     if book is None:
         raise ValueError(f"No such book: {book_id}")
@@ -91,10 +93,28 @@ def run_scoring(session: Session, book_id: uuid.UUID, job_id: str) -> dict[str, 
         .scalars()
         .all()
     )
+    total_candidates = len(cards)
     if not cards:
-        return {"scored": 0}
+        return {"scored": 0, "candidates": 0}
 
-    client = LLMClient()
+    # Idempotency: skip any card that already has a score (concept_card_id
+    # is UNIQUE on candidate_scores — a real DB guard, not just an
+    # application-level check). Filtering before batching also means a
+    # re-run doesn't re-spend LLM quota on cards already scored.
+    already_scored = set(
+        session.execute(
+            select(CandidateScoreORM.concept_card_id).where(
+                CandidateScoreORM.concept_card_id.in_([c.id for c in cards])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cards = [c for c in cards if c.id not in already_scored]
+    if not cards:
+        return {"scored": 0, "candidates": total_candidates}
+
+    client = llm_client or LLMClient()
     scored = 0
 
     for batch_no, batch in enumerate(_chunked(cards, BATCH_SIZE)):
@@ -151,4 +171,4 @@ def run_scoring(session: Session, book_id: uuid.UUID, job_id: str) -> dict[str, 
             scored += 1
 
     session.flush()
-    return {"scored": scored, "candidates": len(cards)}
+    return {"scored": scored, "candidates": total_candidates}

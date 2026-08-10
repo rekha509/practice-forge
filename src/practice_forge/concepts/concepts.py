@@ -93,6 +93,23 @@ def run_concept_distillation(
         .scalars()
         .all()
     )
+
+    # Idempotency: skip any problem that already has a card (natural key —
+    # migration 0003 makes source_problem_id NOT NULL + UNIQUE, so this is
+    # a real guard, not just an application-level convention). Filtering
+    # before batching also means a re-run doesn't re-spend LLM quota on
+    # problems it's already distilled.
+    already_distilled = set(
+        session.execute(
+            select(ConceptCardORM.source_problem_id).where(
+                ConceptCardORM.source_problem_id.in_([p.id for p in problems])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    problems = [p for p in problems if p.id not in already_distilled]
+
     if not problems:
         return {"distilled": 0, "parse_failures": 0, "clusters": 0}
 
@@ -148,6 +165,7 @@ def run_concept_distillation(
                 id=uuid.uuid4(),
                 book_id=book_id,
                 section_id=problem.section_id,
+                source_problem_id=problem.id,
                 name=item.name,
                 topic_node_ids=[],
                 governing_equations_latex=item.governing_equations_latex,
@@ -187,10 +205,28 @@ def _cluster_cards(
     session: Session, discipline_id: uuid.UUID, cards: list[ConceptCardORM]
 ) -> list[ConceptClusterORM]:
     """Identical fingerprints OR cosine >= 0.92 collapse into one cluster.
-    Greedy: walk cards in order, attach to the first existing cluster that
-    matches either condition against its representative, else start a new
-    cluster."""
-    clusters: list[ConceptClusterORM] = []
+    Greedy: walk cards in order, attach to the first matching cluster
+    (existing or newly created this call), else start a new cluster.
+
+    Clusters are the no-repeat guarantee's unit of truth (IssuedLedger
+    keys on them) and are scoped by discipline, not by book — the whole
+    point is catching a duplicate concept across different ingests of the
+    same course. Matching only against `cards` (this call's batch, as an
+    earlier version did) silently breaks that across any second S5 run —
+    idempotency's own filtering makes `cards` frequently empty or partial
+    on a resumed/re-run, and a genuine duplicate of an earlier run's
+    concept would land in its own new cluster instead of merging. So every
+    call loads this discipline's EXISTING clusters first and matches new
+    cards against those too, not just against each other."""
+    existing_clusters = list(
+        session.execute(
+            select(ConceptClusterORM).where(ConceptClusterORM.discipline_id == discipline_id)
+        )
+        .scalars()
+        .all()
+    )
+    clusters: list[ConceptClusterORM] = list(existing_clusters)
+    touched: list[ConceptClusterORM] = []
 
     for card in cards:
         matched: ConceptClusterORM | None = None
@@ -206,6 +242,8 @@ def _cluster_cards(
 
         if matched is not None:
             matched.member_card_ids = [*matched.member_card_ids, card.id]
+            if matched not in touched:
+                touched.append(matched)
         else:
             new_cluster = ConceptClusterORM(
                 id=uuid.uuid4(),
@@ -216,6 +254,7 @@ def _cluster_cards(
             )
             session.add(new_cluster)
             clusters.append(new_cluster)
+            touched.append(new_cluster)
 
     session.flush()
-    return clusters
+    return touched

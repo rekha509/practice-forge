@@ -21,7 +21,15 @@ from sqlalchemy.orm import Session
 
 from practice_forge.config import get_settings
 from practice_forge.db.base import make_session_factory
-from practice_forge.db.models import BookORM, PageORM, SectionORM, SourceProblemORM
+from practice_forge.db.models import (
+    BookORM,
+    CandidateScoreORM,
+    ConceptCardORM,
+    ConceptClusterORM,
+    PageORM,
+    SectionORM,
+    SourceProblemORM,
+)
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
 
 _test_session_factory = make_session_factory(get_settings().test_database_url)
@@ -41,7 +49,15 @@ def _synced_disciplines() -> None:
 @pytest.fixture
 def db_session() -> Iterator[Session]:
     session = _test_session_factory()
-    # FK order: source_problems/sections reference books; pages reference books.
+    # FK order: candidate_scores/concept_clusters reference concept_cards;
+    # concept_cards/source_problems/sections reference books; pages
+    # reference books. concept_clusters is discipline-scoped, not
+    # book-scoped (see concepts.py's _cluster_cards) — must be cleared too,
+    # or a stale cluster from a prior test's run could wrongly "match" a
+    # fresh test's card via the cross-run clustering path.
+    session.execute(delete(CandidateScoreORM))
+    session.execute(delete(ConceptClusterORM))
+    session.execute(delete(ConceptCardORM))
     session.execute(delete(SourceProblemORM))
     session.execute(delete(SectionORM))
     session.execute(delete(PageORM))
