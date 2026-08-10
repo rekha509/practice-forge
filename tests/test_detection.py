@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from practice_forge.db.models import BookORM, DisciplineORM, PageORM, SectionORM, SourceProblemORM
-from practice_forge.detection.detection import make_default_batch_confirm_fn
+from practice_forge.detection.detection import detect_candidates, make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.models.enums import ProblemKind
@@ -139,6 +139,50 @@ def test_confirmed_problems_carry_kind_and_given_find(
 def test_stub_confirm_fn_raises_loudly_without_opt_in() -> None:
     with pytest.raises(RuntimeError, match="PF_USE_STUB_LLM"):
         stub_batch_confirm_fn(["Example 1.1: some text"])
+
+
+def test_detect_candidates_splits_sequential_exercise_list_into_items() -> None:
+    """The real gap this guards: Nag's end-of-chapter exercises are a bare
+    numbered list ("5.1 ...", "5.2 ...") under one "PROBLEMS" header, with
+    no per-item keyword — the old behavior treated the whole list as one
+    candidate, hiding every item from the confirm pass but the first. Real
+    text pattern below (OCR "I.I" for digit "1.1") is the exact form
+    confirmed live on this book, not invented for the test."""
+    pages = [
+        (
+            10,
+            "Example 5.1 A worked example.\nSome solution text.\n"
+            "PROBLEMS\n"
+            "I.I A pump discharges a liquid into a drum.\n"
+            "More detail about the pump problem.\n"
+            "5.2 A second exercise about a different scenario.\n"
+            "5.3 A third exercise, quite unrelated.\n",
+        ),
+        (11, "Example 6.1 Next chapter's first worked example.\nMore text.\n"),
+    ]
+    candidates = detect_candidates(pages)
+
+    exercise_candidates = [c for c in candidates if c.text.startswith(("I.I", "5.2", "5.3"))]
+    assert len(exercise_candidates) == 3
+    assert exercise_candidates[0].text.startswith("I.I A pump discharges")
+    assert "More detail about the pump problem" in exercise_candidates[0].text
+    # Each item's span stops at the NEXT numbered item, not swallowing the
+    # rest of the list.
+    assert "second exercise" not in exercise_candidates[0].text
+    assert exercise_candidates[1].text.startswith("5.2 A second exercise")
+    assert exercise_candidates[2].text.startswith("5.3 A third exercise")
+    # The last item's span stops at the next chapter's heading, not
+    # running past it.
+    assert "Next chapter's first worked example" not in exercise_candidates[2].text
+
+
+def test_detect_candidates_falls_back_to_whole_blob_when_no_numbered_items() -> None:
+    """Safety net: a PROBLEMS/EXERCISES header with no recognizable N.M
+    items must still produce something, not silently vanish."""
+    pages = [(10, "PROBLEMS\nDiscuss the following qualitatively, with no numbering.\n")]
+    candidates = detect_candidates(pages)
+    assert len(candidates) == 1
+    assert candidates[0].text.startswith("PROBLEMS")
 
 
 def test_detection_idempotent_and_preserves_same_page_multi_problem(

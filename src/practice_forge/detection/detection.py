@@ -52,6 +52,23 @@ _WORKED_EXAMPLE_PATTERN = re.compile(r"^(Example|Illustrative Example)\s+\d+\.\d
 _EXERCISE_PATTERN = re.compile(r"^Problem\s+\d+\.\d+", re.IGNORECASE)
 _EXERCISE_SECTION_PATTERN = re.compile(r"^(PROBLEMS|EXERCISES)\b")
 
+# End-of-chapter exercise lists in this book are a bare numbered sequence
+# ("5.1 ...", "5.2 ...") under one "PROBLEMS"/"EXERCISES" header, with no
+# per-item keyword — _EXERCISE_PATTERN above needs the literal word
+# "Problem" and never matches these, so the whole list fell through as one
+# giant blob under _EXERCISE_SECTION_PATTERN (see MAX_CANDIDATE_CHARS's
+# original note). `I` is included alongside `\d+` because this book's OCR
+# routinely misreads the digit "1" as a capital "I" in this exact position
+# (confirmed live: "I.I A pwnp discharges..." on a real page whose true
+# text is "1.1 A pump discharges..."). The chapter component is deliberately
+# `[1-9]\d*`, not bare `\d+`: found live at full-book scale that a solution's
+# own inline numeric result (e.g. "0.06\nFor the fluid system, calculate...")
+# false-matched as a new exercise item — this book's real chapters are
+# numbered 1-22, never 0, so excluding a leading zero removes that
+# false-positive class without needing anything smarter than the book's
+# own numbering convention.
+_SEQUENTIAL_ITEM_PATTERN = re.compile(r"^(?:[1-9]\d*|I)\.(?:\d+|I)\b")
+
 _CONFIRM_PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "s3_problem_confirm.md"
 
 
@@ -107,16 +124,48 @@ def detect_candidates(pages: list[tuple[int, str]]) -> list[Candidate]:
             if stripped_line:
                 flat_lines.append((page_no, stripped_line))
 
-    headings: list[tuple[int, ProblemKind]] = []
+    headings: list[tuple[int, ProblemKind, bool]] = []
     for i, (_, line) in enumerate(flat_lines):
         if _WORKED_EXAMPLE_PATTERN.match(line):
-            headings.append((i, ProblemKind.WORKED_EXAMPLE))
-        elif _EXERCISE_PATTERN.match(line) or _EXERCISE_SECTION_PATTERN.match(line):
-            headings.append((i, ProblemKind.EXERCISE))
+            headings.append((i, ProblemKind.WORKED_EXAMPLE, False))
+        elif _EXERCISE_PATTERN.match(line):
+            headings.append((i, ProblemKind.EXERCISE, False))
+        elif _EXERCISE_SECTION_PATTERN.match(line):
+            headings.append((i, ProblemKind.EXERCISE, True))
 
     candidates: list[Candidate] = []
-    for idx, (start_i, kind_guess) in enumerate(headings):
+    for idx, (start_i, kind_guess, is_section_header) in enumerate(headings):
         end_i = headings[idx + 1][0] if idx + 1 < len(headings) else len(flat_lines)
+
+        if is_section_header:
+            # Sequential-enumeration: once inside a PROBLEMS/EXERCISES
+            # section, every subsequent N.M-numbered line starts its own
+            # candidate — not one blob for the whole section — running
+            # until the next such line or this section's own end boundary
+            # (the next detected heading of any kind, i.e. effectively the
+            # next chapter/section).
+            item_starts = [
+                i
+                for i in range(start_i + 1, end_i)
+                if _SEQUENTIAL_ITEM_PATTERN.match(flat_lines[i][1])
+            ]
+            if item_starts:
+                for item_idx, item_start in enumerate(item_starts):
+                    item_end = (
+                        item_starts[item_idx + 1]
+                        if item_idx + 1 < len(item_starts)
+                        else end_i
+                    )
+                    span_text = "\n".join(
+                        line for _, line in flat_lines[item_start:item_end]
+                    )[:MAX_CANDIDATE_CHARS]
+                    page_no = flat_lines[item_start][0]
+                    candidates.append(Candidate(page_no, ProblemKind.EXERCISE, span_text))
+                continue
+            # No numbered items found under this header (a section that
+            # doesn't fit the pattern) — fall back to the old whole-blob
+            # candidate below as a safety net, rather than dropping it.
+
         span_text = "\n".join(line for _, line in flat_lines[start_i:end_i])[:MAX_CANDIDATE_CHARS]
         page_no = flat_lines[start_i][0]
         candidates.append(Candidate(page_no, kind_guess, span_text))
