@@ -17,7 +17,7 @@ from sqlalchemy import select as sa_select
 from practice_forge.codegen.codegen import generate_and_verify_solution
 from practice_forge.concepts.concepts import run_concept_distillation
 from practice_forge.db.base import session_scope
-from practice_forge.db.models import SourceProblemORM, VariantORM
+from practice_forge.db.models import BookORM, DisciplineORM, SourceProblemORM, VariantORM
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.figures.figures import run_figure_descope
@@ -26,7 +26,6 @@ from practice_forge.llm.client import LLMClient
 from practice_forge.models.enums import VerificationStatus
 from practice_forge.profiles.loader import list_profiles, load_profile
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
-from practice_forge.sandbox.runner import DEFAULT_IMAGE
 from practice_forge.scoring.scoring import run_scoring
 from practice_forge.selection.selection import run_selection
 from practice_forge.structure.structure import run_structure
@@ -173,6 +172,19 @@ def generate(
     implemented yet — see PROGRESS.md."""
     book_id = uuid.UUID(book)
     with session_scope() as session:
+        book_row = session.get(BookORM, book_id)
+        assert book_row is not None
+        discipline = session.get(DisciplineORM, book_row.discipline_id)
+        assert discipline is not None
+        profile = load_profile(discipline.key)
+        # Real per-discipline image (has CoolProp etc. — see
+        # docker/sandbox/mechanical.Dockerfile), not the shared base:
+        # found live that a real generated solution needed CoolProp for
+        # steam properties and failed with ModuleNotFoundError until this
+        # image existed and was actually used instead of DEFAULT_IMAGE.
+        sandbox_image = discipline.sandbox_image_tag
+        extra_libs = [lib for lib in profile.solver_libs if lib not in ("pint", "numpy", "sympy", "scipy", "matplotlib")]
+
         selection_result = run_selection(session, book_id)
         if not selection_result.can_reach_target:
             typer.echo(f"cannot reach target: {selection_result.reason}", err=True)
@@ -228,8 +240,8 @@ def generate(
                 f"s9-{book_id}-{i}",
                 member.card,
                 variant,
-                extra_libs=[],
-                sandbox_image=DEFAULT_IMAGE,
+                extra_libs=extra_libs,
+                sandbox_image=sandbox_image,
                 sandbox_timeout_s=15,
             )
             session.add(variant)
