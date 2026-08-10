@@ -58,19 +58,30 @@ stages:
     model: gemini-flash-lite-latest
   s8_variant_generation:
     provider: gemini
-    model: gemini-flash-latest
-    # Deliberately reserved here, not just defaulted here: S8/S9 are the
-    # two stages where reasoning quality directly decides correctness (a
-    # wrong-but-plausible variant or a subtly-wrong generated solution is
-    # a real product failure), unlike S2/S3/S5/S6's schema-bound
-    # extraction/classification. No working free-tier Pro model exists on
-    # this account (see above; re-verify live before ever trusting that
-    # finding again — aliases have already moved once) — Flash with
-    # thinking left on is the deepest reasoning available today.
+    # TEMPORARY, 2026-08-10: flash-latest's real 20/day cap was already
+    # spent today (23 used) by the pre-fix S5 distillation run earlier
+    # this same session, before it existed to reserve. Standing policy is
+    # still gemini-flash-latest (see below) — this is a same-day quota
+    # workaround to get a real verified answer today as explicitly
+    # requested, not a reversal of that policy. Revert to
+    # gemini-flash-latest once flash-latest's quota resets (UTC).
+    model: gemini-flash-lite-latest
+    # Deliberately reserved on gemini-flash-latest normally, not just
+    # defaulted here: S8/S9 are the two stages where reasoning quality
+    # directly decides correctness (a wrong-but-plausible variant or a
+    # subtly-wrong generated solution is a real product failure), unlike
+    # S2/S3/S5/S6's schema-bound extraction/classification. No working
+    # free-tier Pro model exists on this account (see above; re-verify
+    # live before ever trusting that finding again — aliases have already
+    # moved once) — Flash with thinking left on is the deepest reasoning
+    # available today, once quota allows using it again.
   s9_codegen:
     provider: gemini
-    model: gemini-flash-latest
-    # Same reservation as s8_variant_generation above.
+    # TEMPORARY, 2026-08-10 — same same-day quota workaround as
+    # s8_variant_generation above, same revert-when-quota-resets plan.
+    model: gemini-flash-lite-latest
+    # Same standing reservation (gemini-flash-latest) as
+    # s8_variant_generation above, once quota allows using it again.
 
 # RPM figures are conservative published free-tier norms for each tier as of
 # this writing — Google doesn't expose per-key limits via the API, only via

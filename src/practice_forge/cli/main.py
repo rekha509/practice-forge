@@ -12,16 +12,18 @@ import uuid
 from pathlib import Path
 
 import typer
+from sqlalchemy import select as sa_select
 
 from practice_forge.codegen.codegen import generate_and_verify_solution
 from practice_forge.concepts.concepts import run_concept_distillation
 from practice_forge.db.base import session_scope
-from practice_forge.db.models import SourceProblemORM
+from practice_forge.db.models import SourceProblemORM, VariantORM
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.figures.figures import run_figure_descope
 from practice_forge.ingest.pipeline import run_ingest
 from practice_forge.llm.client import LLMClient
+from practice_forge.models.enums import VerificationStatus
 from practice_forge.profiles.loader import list_profiles, load_profile
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
 from practice_forge.sandbox.runner import DEFAULT_IMAGE
@@ -177,17 +179,35 @@ def generate(
             raise typer.Exit(code=1)
 
         attachments = select_extension_attachments(selection_result.selected)
-        variant_client = LLMClient()
-        codegen_client = LLMClient()
+        # One shared client for both stages, not one each: the RPM token
+        # bucket is in-memory per RateLimiter instance (see
+        # llm/rate_limiter.py) — two separate LLMClient()s routed to the
+        # same real model each start with a full bucket, so their combined
+        # burst can exceed the real per-model RPM cap even though a
+        # limiter exists. Found live: a real 429 fired mid-run today with
+        # two separate clients both on gemini-flash-lite-latest.
+        client = LLMClient()
 
         verified = 0
         failed = 0
+        skipped = 0
         for i, member in enumerate(selection_result.selected[:limit]):
+            existing = session.execute(
+                sa_select(VariantORM).where(
+                    VariantORM.concept_cluster_id == member.cluster_id,
+                    VariantORM.verification_status == VerificationStatus.VERIFIED,
+                )
+            ).first()
+            if existing is not None:
+                typer.echo(f"  [{i}] {member.card.name[:50]:50s} -> already verified, skipping")
+                skipped += 1
+                continue
+
             problem = session.get(SourceProblemORM, member.card.source_problem_id)
             assert problem is not None
 
             variant = generate_variant(
-                variant_client,
+                client,
                 f"s8-{book_id}-{i}",
                 member.cluster_id,
                 member.card,
@@ -204,7 +224,7 @@ def generate(
                 variant.extension_type = extension
 
             generate_and_verify_solution(
-                codegen_client,
+                client,
                 f"s9-{book_id}-{i}",
                 member.card,
                 variant,
@@ -222,7 +242,7 @@ def generate(
             else:
                 failed += 1
 
-    typer.echo(f"generated: {verified + failed}, verified: {verified}, failed: {failed}")
+    typer.echo(f"generated: {verified + failed}, verified: {verified}, failed: {failed}, skipped: {skipped}")
 
 
 @app.command()
