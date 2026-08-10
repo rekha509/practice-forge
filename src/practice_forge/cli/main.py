@@ -13,17 +13,22 @@ from pathlib import Path
 
 import typer
 
+from practice_forge.codegen.codegen import generate_and_verify_solution
 from practice_forge.concepts.concepts import run_concept_distillation
 from practice_forge.db.base import session_scope
+from practice_forge.db.models import SourceProblemORM
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.figures.figures import run_figure_descope
 from practice_forge.ingest.pipeline import run_ingest
+from practice_forge.llm.client import LLMClient
 from practice_forge.profiles.loader import list_profiles, load_profile
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
+from practice_forge.sandbox.runner import DEFAULT_IMAGE
 from practice_forge.scoring.scoring import run_scoring
 from practice_forge.selection.selection import run_selection
 from practice_forge.structure.structure import run_structure
+from practice_forge.variants.variants import generate_variant, select_extension_attachments
 
 app = typer.Typer(name="pf", help="Generate execution-verified engineering practice problem sets.")
 profiles_app = typer.Typer(help="Inspect discipline profiles.")
@@ -155,17 +160,69 @@ def figures(book_id: str) -> None:
 @app.command()
 def generate(
     book: str = typer.Option(..., "--book", help="Book ID to select and generate from."),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    limit: int = typer.Option(
+        20, "--limit", help="Generate variants+solutions for at most this many selected problems."
+    ),
 ) -> None:
-    """Run selection + solve + render (S6-S10) for a book/course.
+    """S7 selection -> S8 (variant generation) -> S9 Part A (core solver +
+    real sandbox execution verification). Every verified_answer comes from
+    actually running generated code in the sandbox, never from anything
+    the LLM merely claims. Rendering/ledger-commit (S9 Part B, S10) not
+    implemented yet — see PROGRESS.md."""
+    book_id = uuid.UUID(book)
+    with session_scope() as session:
+        selection_result = run_selection(session, book_id)
+        if not selection_result.can_reach_target:
+            typer.echo(f"cannot reach target: {selection_result.reason}", err=True)
+            raise typer.Exit(code=1)
 
-    Not yet implemented — lands across Phases P6-P10. See PROGRESS.md.
-    """
-    typer.echo(
-        "pf generate is not implemented yet (Phases P6-P10 — see PROGRESS.md 'Next Immediate Task').",
-        err=True,
-    )
-    raise typer.Exit(code=1)
+        attachments = select_extension_attachments(selection_result.selected)
+        variant_client = LLMClient()
+        codegen_client = LLMClient()
+
+        verified = 0
+        failed = 0
+        for i, member in enumerate(selection_result.selected[:limit]):
+            problem = session.get(SourceProblemORM, member.card.source_problem_id)
+            assert problem is not None
+
+            variant = generate_variant(
+                variant_client,
+                f"s8-{book_id}-{i}",
+                member.cluster_id,
+                member.card,
+                problem,
+                member.difficulty_tier,
+            )
+            if variant is None:
+                typer.echo(f"  [{i}] {member.card.name[:50]:50s} -> variant generation failed to parse")
+                failed += 1
+                continue
+
+            extension = attachments.get(member.card.id)
+            if extension is not None:
+                variant.extension_type = extension
+
+            generate_and_verify_solution(
+                codegen_client,
+                f"s9-{book_id}-{i}",
+                member.card,
+                variant,
+                extra_libs=[],
+                sandbox_image=DEFAULT_IMAGE,
+                sandbox_timeout_s=15,
+            )
+            session.add(variant)
+            session.commit()
+
+            status = variant.verification_status.value
+            typer.echo(f"  [{i}] {member.card.name[:50]:50s} -> {status}")
+            if status == "verified":
+                verified += 1
+            else:
+                failed += 1
+
+    typer.echo(f"generated: {verified + failed}, verified: {verified}, failed: {failed}")
 
 
 @app.command()
