@@ -200,6 +200,8 @@ def select(book_id: str) -> None:
     typer.echo(f"reason: {result.reason}")
     for constraint, satisfied in result.constraints_satisfied.items():
         typer.echo(f"  [{'PASS' if satisfied else 'FAIL'}] {constraint}")
+    for relaxation in result.relaxations_applied:
+        typer.echo(f"  [RELAXED] {relaxation}")
 
 
 if __name__ == "__main__":

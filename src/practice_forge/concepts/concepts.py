@@ -295,6 +295,16 @@ def _cluster_cards(
                 break
 
         if matched is not None:
+            # Real bug, same shape as the topic_node_ids=[] one: centroid_
+            # embedding was set once at cluster creation and never updated
+            # when a new member joined, so any cluster with >1 member
+            # carried a stale centroid (just its first member's embedding
+            # forever). Running mean, weighted by the member count before
+            # this join.
+            old_count = len(matched.member_card_ids)
+            old_centroid = np.array(matched.centroid_embedding)
+            new_centroid = (old_centroid * old_count + np.array(card.embedding)) / (old_count + 1)
+            matched.centroid_embedding = new_centroid.tolist()
             matched.member_card_ids = [*matched.member_card_ids, card.id]
             if matched not in touched:
                 touched.append(matched)
