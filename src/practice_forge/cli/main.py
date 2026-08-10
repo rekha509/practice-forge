@@ -31,6 +31,7 @@ from practice_forge.scoring.scoring import run_scoring
 from practice_forge.selection.selection import run_selection
 from practice_forge.structure.structure import run_structure
 from practice_forge.variants.variants import generate_variant, select_extension_attachments
+from practice_forge.verification.calibration import run_calibration
 
 app = typer.Typer(name="pf", help="Generate execution-verified engineering practice problem sets.")
 profiles_app = typer.Typer(help="Inspect discipline profiles.")
@@ -256,6 +257,52 @@ def generate(
                 failed += 1
 
     typer.echo(f"generated: {verified + failed}, verified: {verified}, failed: {failed}, skipped: {skipped}")
+
+
+@app.command()
+def calibrate(
+    book: str = typer.Option(..., "--book", help="Book ID to calibrate against."),
+    limit: int = typer.Option(
+        30, "--limit", help="Max SourceProblems (with a parseable final_answer) to solve."
+    ),
+) -> None:
+    """Calibration mode: solves real SourceProblems with UNCHANGED source
+    parameters (no S8 rewrite) and compares against the book's own printed
+    final_answer, within 1% relative tolerance. The strongest accuracy
+    check available — a mismatch here is attributable to the solver, not
+    to a rewritten problem. Nothing is persisted."""
+    book_id = uuid.UUID(book)
+    with session_scope() as session:
+        book_row = session.get(BookORM, book_id)
+        assert book_row is not None
+        discipline = session.get(DisciplineORM, book_row.discipline_id)
+        assert discipline is not None
+        profile = load_profile(discipline.key)
+        sandbox_image = discipline.sandbox_image_tag
+        extra_libs = [lib for lib in profile.solver_libs if lib not in ("pint", "numpy", "sympy", "scipy", "matplotlib")]
+
+        client = LLMClient()
+        report = run_calibration(
+            session,
+            book_id,
+            client,
+            limit=limit,
+            sandbox_image=sandbox_image,
+            extra_libs=extra_libs,
+        )
+
+    for row in report.rows:
+        typer.echo(f"  page {row.page_no:4d} [{row.outcome:24s}] {row.detail[:160]}")
+
+    typer.echo("")
+    typer.echo(f"candidates considered: {report.total_candidates}")
+    typer.echo(f"  matched:                   {report.matched}")
+    typer.echo(f"  mismatched:                {report.mismatched}")
+    typer.echo(f"  unparseable book answer:   {report.unparseable_book_answer}")
+    typer.echo(f"  solver failed to verify:   {report.solver_failed}")
+    denom = report.matched + report.mismatched
+    if denom:
+        typer.echo(f"accuracy over comparable rows: {report.matched}/{denom} ({100 * report.matched / denom:.1f}%)")
 
 
 @app.command()
