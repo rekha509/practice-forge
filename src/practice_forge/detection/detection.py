@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from practice_forge.db.models import PageORM, SectionORM, SourceProblemORM
 from practice_forge.llm.batching import call_batch
 from practice_forge.llm.client import LLMClient
+from practice_forge.llm.sanitize import strip_nul, strip_nul_list, strip_nul_opt
 from practice_forge.models.enums import FigureDependency, ProblemKind
 
 BATCH_SIZE = 20
@@ -232,11 +233,11 @@ def run_detection(
                 section_id=_find_section_id(list(sections), candidate.page_no),
                 page_no=candidate.page_no,
                 kind=result.kind,
-                statement_md=candidate.text,
-                given=result.given,
-                find=result.find,
+                statement_md=strip_nul(candidate.text),
+                given=strip_nul_list(result.given),
+                find=strip_nul_list(result.find),
                 solution_md=None,
-                final_answer=result.final_answer,
+                final_answer=strip_nul_opt(result.final_answer),
                 figure_ids=[],
                 figure_dependency=FigureDependency.NONE,
                 is_solvable=True,
@@ -244,7 +245,17 @@ def run_detection(
             session.add(problem)
             persisted.append(problem)
 
-    session.flush()
+        # Commit per batch, not once at the end: found live on the full
+        # 781-page book — a single bad row anywhere in the whole run (a
+        # NUL byte from OCR, see ingest/extract.py's fix) previously
+        # rolled back EVERY already-confirmed batch in one transaction,
+        # discarding LLM work that had already been paid for in quota.
+        # Committing per batch means a later batch's failure can't erase
+        # earlier batches' real, already-persisted output — and combined
+        # with this function's own idempotency check above, a re-run
+        # after a crash resumes cleanly from whatever did commit.
+        session.commit()
+
     return persisted
 
 

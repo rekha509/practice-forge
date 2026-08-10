@@ -29,4 +29,5 @@ sandbox_tmp/
 data/books/
 data/figures/
 data/llm_rate_limit_state.json
+data/llm_usage.log
 generated/

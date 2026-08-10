@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from practice_forge.db.models import BookORM, CandidateScoreORM, ConceptCardORM, DisciplineORM
 from practice_forge.llm.batching import call_batch
 from practice_forge.llm.client import LLMClient
+from practice_forge.llm.sanitize import strip_nul
 from practice_forge.models.enums import DifficultyLevel, ExtensionType
 from practice_forge.models.scoring import composite_score
 from practice_forge.profiles.loader import load_profile
@@ -165,7 +166,13 @@ def run_scoring(
                     ],
                     composite_score=composite,
                     difficulty=DifficultyLevel(item.difficulty),
-                    scoring_rationale=item.scoring_rationale,
+                    # NUL bytes (0x00) crash Postgres text/JSONB columns
+                    # outright — found live at full-book scale in S3's
+                    # LLM-generated fields (see llm/sanitize.py); the same
+                    # exposure applies to any free-text LLM output.
+                    scoring_rationale={
+                        strip_nul(k): strip_nul(v) for k, v in item.scoring_rationale.items()
+                    },
                 )
             )
             scored += 1

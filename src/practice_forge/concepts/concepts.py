@@ -28,6 +28,7 @@ from practice_forge.config import get_settings
 from practice_forge.db.models import BookORM, ConceptCardORM, ConceptClusterORM, SourceProblemORM
 from practice_forge.llm.batching import call_batch
 from practice_forge.llm.client import LLMClient
+from practice_forge.llm.sanitize import strip_nul, strip_nul_list
 
 CLUSTER_COSINE_THRESHOLD = 0.92
 
@@ -147,18 +148,29 @@ def run_concept_distillation(
             if item is None:
                 continue
 
+            # NUL bytes (0x00) crash Postgres text columns outright — found
+            # live at full-book scale in S3's LLM-generated fields (see
+            # llm/sanitize.py); every stage persisting free-text LLM output
+            # has the same exposure, not just the one that hit it first.
+            equations = strip_nul_list(item.governing_equations_latex)
+            given_dimensions = strip_nul_list(item.given_dimensions)
+            solve_for_dimension = strip_nul(item.solve_for_dimension)
+            method_tag = strip_nul(item.method_tag)
+
             canonical_reprs = []
-            for eq in item.governing_equations_latex:
+            for eq in equations:
                 repr_str = canonicalize_equation(eq)
                 if repr_str.startswith("UNPARSED::"):
                     parse_failures += 1
                 canonical_reprs.append(repr_str)
 
             fingerprint = concept_fingerprint(
-                canonical_reprs, item.given_dimensions, item.solve_for_dimension, item.method_tag
+                canonical_reprs, given_dimensions, solve_for_dimension, method_tag
             )
 
-            embed_text = f"{item.name}. {item.solution_strategy}. Method: {item.method_tag}"
+            name = strip_nul(item.name)
+            solution_strategy = strip_nul(item.solution_strategy)
+            embed_text = f"{name}. {solution_strategy}. Method: {method_tag}"
             texts_to_embed.append(embed_text)
 
             card = ConceptCardORM(
@@ -166,16 +178,16 @@ def run_concept_distillation(
                 book_id=book_id,
                 section_id=problem.section_id,
                 source_problem_id=problem.id,
-                name=item.name,
+                name=name,
                 topic_node_ids=[],
-                governing_equations_latex=item.governing_equations_latex,
+                governing_equations_latex=equations,
                 canonical_equation_srepr=canonical_reprs,
-                assumptions=item.assumptions,
-                solution_strategy=item.solution_strategy,
-                typical_pitfalls=item.typical_pitfalls,
-                given_dimensions=item.given_dimensions,
-                solve_for_dimension=item.solve_for_dimension,
-                method_tag=item.method_tag,
+                assumptions=strip_nul_list(item.assumptions),
+                solution_strategy=solution_strategy,
+                typical_pitfalls=strip_nul_list(item.typical_pitfalls),
+                given_dimensions=given_dimensions,
+                solve_for_dimension=solve_for_dimension,
+                method_tag=method_tag,
                 continuous_param_count=item.continuous_param_count,
                 has_degradation_mode=item.has_degradation_mode,
                 has_design_tradeoff=item.has_design_tradeoff,

@@ -45,7 +45,16 @@ def extract_pages(pdf_path: str) -> list[PageExtraction]:
     reader = PdfReader(pdf_path)
     pages: list[PageExtraction] = []
     for i, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
+        # Real bug, hit live at full-book (781-page) scale, never at the
+        # 30/80-page excerpts: pypdf occasionally extracts a literal NUL
+        # (0x00) byte from certain embedded fonts/OCR artifacts, which
+        # Postgres text columns reject outright ("PostgreSQL text fields
+        # cannot contain NUL bytes") — and since that surfaces at INSERT
+        # time, not extraction time, it silently poisoned an entire
+        # already-LLM-confirmed batch downstream. Stripped at the source
+        # so every consumer is protected, not just the one that happened
+        # to trip over it first.
+        text = (page.extract_text() or "").replace("\x00", "")
         pages.append(
             PageExtraction(
                 page_no=i,
