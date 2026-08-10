@@ -212,14 +212,16 @@ def _latex_to_typst_math(s: str) -> str:
             # Found live compiling real equations: Typst treats a bare
             # multi-letter run in math mode as a single identifier lookup
             # and raises `unknown variable` if it isn't one already in
-            # scope — unlike LaTeX, which just italicizes adjacent single
-            # letters with no lookup at all. A single letter is always a
-            # safe implicit variable in Typst; a real acronym like "COP"
-            # is not. Multi-letter runs not in the small safe set below
-            # are quoted (upright literal text) so they render instead of
-            # crashing the compile.
+            # scope — unlike LaTeX, which just italicizes adjacent letters
+            # with no lookup at all. A single letter is always a safe
+            # implicit variable in Typst; a real acronym like "COP" is
+            # not, and neither is a letter+digit run written without a
+            # LaTeX subscript (e.g. "a2" instead of "a_2" — confirmed live
+            # against this book's own real generated equations). Runs not
+            # in the small safe set below are quoted (upright literal
+            # text) so they render instead of crashing the compile.
             j = i
-            while j < n and s[j].isalpha():
+            while j < n and s[j].isalnum():
                 j += 1
             word = s[i:j]
             if len(word) == 1 or word in _TYPST_SAFE_BARE_WORDS:
