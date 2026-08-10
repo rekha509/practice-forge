@@ -1,5 +1,5 @@
-## Current Phase: 6 — full real textbook (781 pages) run complete through S7, idempotently
-## Status: S1-S7 verified end-to-end on the real full book; real hard-constraint failures found and recorded, not hidden. See bottom-most section for the latest (2026-08-10 full-book run); sections above it are earlier, superseded-scale runs kept for history.
+## Current Phase: 6 — S3 recall fixed at real full-book scale; S5 blocked on a real, corrected multi-day quota
+## Status: S3 recall fixed (66 -> 328 confirmed problems); S5 (distillation) genuinely needs multiple real days against a newly-corrected 20/day gemini-flash-latest cap — idempotency (already built) is what makes that resumable rather than a restart. See bottom-most section for the latest (2026-08-10, S3-recall session); sections above it are earlier, superseded-scale runs kept for history.
 
 **Everything in this run is real.** No synthetic textbook content, no
 hand-tuned fixtures, no stub satisfying a gate. Every number below comes
@@ -183,3 +183,69 @@ Nothing blocking remains for S1-S7 at full-book scale — the pipeline runs end 
 - Decide how to handle the "max 3 per Section" real bind (9/22 chapters over cap) — likely needs either the full MMR/relaxation logic in `selection.py` (built but never exercised beyond the trivial path) to actually kick in, or a product decision about relaxing that constraint.
 - Investigate the real S3 confirm-variance (84 vs 66 on identical input) if problem-count stability matters for reproducibility — not attempted this session, and S3 remains frozen pending the user's own hand-count.
 - Phases P8-P12 (variant generation, codegen/sandbox execution, rendering, ledger, chat) are still not started — this session's work has been entirely S1-S7.
+
+## Completed: S3 recall fix, real per-chapter numbers, TopicNode.aliases, a real quota correction (2026-08-10)
+
+Direct response to: "S3 recall is the blocking problem." All four numbered tasks
+done for real, against the real 781-page book. Book `4d97664c-50ee-4c77-83b8-7951efae4d60`.
+
+**1. temperature=0, live-verified — variance was mostly sampling noise, not prompt ambiguity.**
+Added `temperature` end-to-end (Backend protocol, both backends, `StageRoute`, `LLMClient`) and pinned `s3_confirm` to 0. Real test: same 684-candidate set, two independent confirm runs — **350 vs 348 confirmed, 18 disagreements (2.6%)**, down from the original unpinned 84 vs 66 (~21%). Conclusion: temperature was the dominant cause. The 18 residual disagreements were shown, not hidden — most are a real false-positive class in the new detector (below); **7 of the 18 are a genuine, thematically-clustered prompt-ambiguity pattern**: every one is a "derive/prove"-style exercise with no numeric given/find (e.g. "11.1 Derive the following equations...", "11.4 Derive the equations..."), and the model flips between is_problem=True/False for this exact class. Not fixed — the S3 prompt (`prompts/s3_problem_confirm.md`) was left untouched per the standing freeze; this is reported for a decision, not decided unilaterally.
+
+**2. Sequential-enumeration detector — the real recall blocker, fixed.**
+Nag's end-of-chapter exercises are a bare numbered list ("5.1 ...", "5.2 ...") under one "PROBLEMS"/"EXERCISES" header with no per-item keyword — the old `_EXERCISE_PATTERN` needed the literal word "Problem" and never matched these, so an entire chapter's exercise list fell through as ONE undifferentiated candidate. Added: once a PROBLEMS/EXERCISES header is found, every subsequent N.M-numbered line starts its own candidate, running to the next such line or the section's own end boundary. Handles this book's real OCR artifact ("1.1" misread as "I.I"). Real result: **109 -> 684 total candidates (+575)** on the pre-refinement candidate set. Found and fixed one real false-positive class in the same pass: the chapter-number component was bare `\d+`, which matched a solution's own inline numeric result (e.g. "0.06\nFor the fluid system, calculate...") as a fake new exercise item — restricted to `[1-9]\d*` since this book's real chapters are numbered 1-22, never 0. New tests cover multi-item splitting, span boundaries, the OCR "I.I" form, and the whole-blob fallback for sections that don't fit the pattern.
+
+**3. Real problems-per-chapter, final numbers** (after wiping and redoing S3-S4 with the fixed detector + temp=0 — old regex-only-detected rows for this book were deleted, not layered on top of the new ones):
+
+| Chapter | Pages | Total | Solvable | Excluded |
+|---|---|---|---|---|
+| Front Matter | 1-11 | 0 | 0 | 0 |
+| Introduction | 12-30 | 10 | 10 | 0 |
+| Temperature | 31-43 | 7 | 6 | 1 |
+| Work and Heat Transfer | 44-68 | 5 | 5 | 0 |
+| First Law of Thermodynamics | 69-86 | 25 | 25 | 0 |
+| First Law Applied to Flow Processes | 87-116 | 6 | 4 | 2 |
+| Second Law of Thermodynamics | 117-157 | 6 | 6 | 0 |
+| Entropy | 158-219 | 51 | 46 | 5 |
+| Available Energy, Exergy and Irreversibility | 220-284 | 50 | 47 | 3 |
+| Properties of Pure Substances | 285-333 | 36 | 33 | 3 |
+| Properties of Gases and Gas Mixtures | 334-401 | 8 | 7 | 1 |
+| Thermodynamic Relations, Equilibrium and Third Law | 402-482 | 23 | 22 | 1 |
+| Vapour Power Cycles | 483-522 | 6 | 4 | 2 |
+| Gas Power Cycles | 523-559 | 24 | 22 | 2 |
+| Refrigeration Cycles | 560-581 | 19 | 18 | 1 |
+| Psychrometrics | 582-597 | 9 | 9 | 0 |
+| Reactive Systems | 598-619 | 2 | 2 | 0 |
+| Compressible Fluid Flow | 620-637 | 6 | 6 | 0 |
+| Elements of Heat Transfer | 638-663 | 12 | 11 | 1 |
+| Statistical Thermodynamics | 664-689 | 3 | 3 | 0 |
+| Irreversible Thermodynamics | 690-706 | 0 | 0 | 0 |
+| Kinetic Theory of Gases... | 707-728 | 1 | 0 | 1 |
+| Transport Processes in Gases | 729-781 | 19 | 19 | 0 |
+| TOTAL | | 328 | 305 | 23 |
+
+Real, uneven, honest distribution — not uniform 30-80/chapter as speculated, but several chapters (Entropy, Available Energy, Properties of Pure Substances) now land in that range, while early/short chapters stay in the single digits, matching how this real textbook is actually structured (application-heavy mid-book chapters carry far more exercises than short intro chapters). **19 of 22 chapters now exceed the 3-per-section cap** (up from 9/22 at the old, under-counted recall) — the constraint binds even harder now that recall is real, confirming this needs an actual product decision (relax the cap, or let S7's untested MMR/relaxation logic activate), not just better detection.
+
+**4. TopicNode.aliases populated for mechanical — real result, and a real limit found.**
+`DisciplineProfile.topics` now supports `{name, aliases}` (backward compatible; every other profile still uses bare strings). `sync_topic_nodes` previously never updated aliases on an existing row, only set them on first creation — fixed. Populated mechanical's 7 topics with real aliases from this book's own 22 real chapter titles. Live result: **18/22 chapters now match a topic (up from 7)**, but only **3 distinct topics** (Thermodynamics, Fluid Mechanics, Heat & Mass Transfer) — real, structural finding: a single-subject thermodynamics book cannot clear a 6-distinct-topic bar under mechanical's 7-topic taxonomy no matter how good the aliases are, since most of those chapters are all legitimately Thermodynamics subtopics. Aliasing fixed the matching engine (it wasn't meaningfully matching before); it did not and structurally cannot fix topic granularity. That's a taxonomy-design question for the user, not something this fix resolves on its own.
+
+**A real quota correction, found while running S5 on the new, much larger problem set — significant, reverses an earlier conclusion.**
+Running distillation against the real 305 solvable problems (up from 51) hit an actual 429 from Google after 23 requests to `gemini-flash-latest` today: the alias now resolves to a different underlying model (`gemini-3.6-flash` per the error body) with a real free-tier cap of 20 requests/day, not the 250 `config/llm_routing.yaml` assumed. Corrected the config so `DailyQuotaExhausted` now fires cleanly at the real number (verified: re-running now stops cleanly with our own exception, not another live 429). **This reverses the earlier "quota isn't binding, multi-day checkpointing isn't needed" conclusion** — with real recall (305 solvable, not 51) and the real 20/day cap, S5 alone needs ~31 batches and will genuinely span multiple real days. Found and fixed a second real bug in the same pass: `run_concept_distillation` and `run_scoring` still only persisted everything in ONE commit at the very end (the exact bug class already fixed in `detection.py`, never applied here) — so hitting the quota wall mid-run discarded all 14 already-completed, already-paid-for distillation batches, not just the failing one. Fixed: both now commit per batch (embeddings too, per distillation batch, well under the 100-item cap at `BATCH_SIZE=10`). This is the real case idempotency was built for — `pf distill` can now simply be re-run once the daily quota resets (UTC) and it will resume from exactly where it left off, at zero re-spent quota on already-distilled problems.
+
+## Blocked On
+**S5 (concept distillation) for the real 305-problem pool — genuinely needs multiple real days.** `gemini-flash-latest`'s real cap is 20 requests/day; 305 solvable problems at `BATCH_SIZE=10` is ~31 batches. Today's quota was exhausted by the debugging/discovery work above (23/20 used) before any of today's distillation batches could commit (all lost to the pre-fix single-commit bug, now fixed — nothing to recover, but nothing was wasted going forward either). Next session/day: just re-run `pf distill 4d97664c-50ee-4c77-83b8-7951efae4d60` — idempotency plus the per-batch commit fix mean it resumes cleanly, no special resume logic needed. Expect roughly 2 real days minimum for distillation alone at 20 batches/day (about 31 batches), then S6/S7 (both flash-lite, real 1000/day cap, not tightly binding) can run same-day once distillation completes.
+
+## Design notes for P10/P11 (recorded now per explicit instruction, NOT implemented — API/UI work starts after S5-S7 complete on the real recall-fixed pool)
+
+- **Regenerate must be two distinct actions, not one:**
+  - "Reshuffle": same concept clusters, new parameters/wording for each — does NOT write to `IssuedLedger`. The concepts already "count" as issued; reshuffling is just re-rendering the same underlying concepts differently.
+  - "New set": 20 unissued clusters — DOES write to `IssuedLedger`. This is what actually advances the no-repeat guarantee.
+  - Model both as separate API actions/endpoints, not one "regenerate" endpoint with a flag — the ledger side-effect is the load-bearing difference between them, not an implementation detail to hide behind a parameter.
+- **Chapter-scoped generation**: the user selects one or more Sections (real book chapters, per S2's TOC-driven structure); selection (S7) is then constrained to only draw from those sections' pool. No selection means the whole book (current default behavior). This needs `run_selection`'s pool query to accept an optional `section_ids` filter — not designed or implemented yet, just recorded so it isn't lost before P10/P11 design work starts.
+
+## Next Immediate Task
+1. Resume S5 distillation once the daily quota resets (see Blocked On) — just re-run `pf distill`, no special handling needed.
+2. Then S6 (score) and S7 (select) on the real, recall-fixed pool — expect very different (likely much better) hard-constraint numbers than the old 51-problem run, given 305 solvable vs 51.
+3. Decide (user, not unilateral): how to handle 19/22 chapters exceeding the 3-per-section cap, and whether mechanical's topic taxonomy needs finer subtopics under Thermodynamics for the 6-distinct-topics constraint to ever be reachable for a single-subject book.
+4. Decide (user, not unilateral): what to do about the 7 real "derive/prove"-exercise confirm-disagreement cases — is a pure derivation exercise (no numeric given/find) meant to be is_problem=True, kind=derivation, and should the prompt say so explicitly?
+5. Only after 1-3 are real: P10/P11 (API + UI), using the two design notes above.
