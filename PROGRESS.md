@@ -1,5 +1,5 @@
-## Current Phase: 6 — real-textbook re-baseline complete through S7 (autonomous run)
-## Status: complete for what was attempted; several real gaps found and honestly recorded, not hidden
+## Current Phase: 6 — full real textbook (781 pages) run complete through S7, idempotently
+## Status: S1-S7 verified end-to-end on the real full book; real hard-constraint failures found and recorded, not hidden. See bottom-most section for the latest (2026-08-10 full-book run); sections above it are earlier, superseded-scale runs kept for history.
 
 **Everything in this run is real.** No synthetic textbook content, no
 hand-tuned fixtures, no stub satisfying a gate. Every number below comes
@@ -120,5 +120,66 @@ see below), but flagging the instability in case it recurs.
 
 Full non-LLM suite: 35/35 passed (up from 31 — 4 new idempotency tests). `ruff check` and `mypy --strict` both clean throughout.
 
+## Completed: full ~781-page book run through S1-S7 (2026-08-10)
+
+**Book**: `Thermodynamics by PK Nag.pdf`, all 781 real pages (not the 30-page excerpt). `book_id=4d97664c-50ee-4c77-83b8-7951efae4d60`. Real Gemini calls throughout, no stubs, no synthetic content.
+
+**Two real bugs found and fixed at this scale, neither visible at 30/80 pages:**
+1. **NUL bytes crashed S3's persistence.** `run_detection`'s single end-of-run flush failed with "PostgreSQL text fields cannot contain NUL bytes" after 6 real confirm batches had already succeeded — rolling back and discarding all 84 already-confirmed, already-quota-paid-for problems. Checked the persisted page markdown directly rather than assuming: **none** of the 781 real pages contain a NUL byte, so the source was an LLM-generated field (`given`/`find`/`final_answer`), not OCR text. Fixed with a shared sanitizer (`llm/sanitize.py`) applied to every free-text field S3/S5/S6 persist from LLM output, `run_detection` now commits per batch (not once at the end, so one bad row can't erase earlier good batches), and `ingest/extract.py` strips NUL at the source too (defense in depth for OCR text specifically, even though it wasn't this crash's actual cause). Re-ran detection clean.
+2. **MAX_TOKENS truncation silently zeroed two whole S5 batches.** `gemini-flash-latest`'s thinking tokens draw from the same budget as visible JSON output; 2 of 6 distillation batches landed `output_tokens + extra_tokens` right at `max_tokens=8192`, truncating the array mid-response. `call_batch` already handles a truncated/unparseable array safely (returns all-`None`), but that meant the whole batch's items produced zero cards, not a partial loss — confirmed exactly: 51 solvable problems in, only 31 distilled, and 51 − 31 = 20 = the two failed batches' combined size. Fixed by raising S5's `max_tokens` to 16384, and added a generic warning in `call_batch` (shared by S3/S5/S6) whenever `stop_reason == "MAX_TOKENS"` so this is visible in the moment for every stage, not just reconstructible after the fact. Idempotency paid off immediately here: re-running `pf distill` only reprocessed the 20 missing problems, not all 51.
+
+**Real S2 (TOC-driven) result**: `toc_entries_parsed=22, chapters_located=22` — **all 22 real chapters located, in correct order**, matching the book's actual structure end to end (Front Matter, Introduction, Temperature, ... through Transport Processes in Gases). Full validation of the TOC-driven rewrite at real scale, not just the 80-page validation fixture.
+
+**Real S3 result**: 66 confirmed problems (59 worked examples, 7 exercises) from real batched Gemini confirm calls. Two things worth disclosing plainly, not glossing over:
+- This is well below the ~187 projected from the 30-page excerpt's rate — confirms the user's own flagged concern that the 30-page excerpt (worked-examples-dense, zero end-of-chapter exercises) was not representative of the whole book's real density.
+- **The S3 confirm step shows real run-to-run variability**: the crashed first attempt had already confirmed 84 problems before the NUL-byte flush failure (lost entirely to rollback); the clean re-run against the identical candidate set confirmed only 66. Candidate detection itself (`detect_candidates`) is deterministic regex over unchanged page text, so this ~22% swing is the LLM confirm call's own sampling variance, not a candidate-detection difference. Recorded here rather than silently treating either number as "the" real count — this is exactly the kind of measured-as-is behavior the user asked for, and it means any single run's confirmed-problem count should be read as one real sample of a noisy process, not a fixed ground truth. Also notable: "Work and Heat Transfer" (pages 44-68) shows 0 confirmed problems in this run despite known real worked examples there (seen directly in earlier page-content inspection this session) — most likely the same confirm-variance, not a structural gap, but not independently verified.
+
+**Real problems-per-chapter distribution** (post-S4; `solvable` is what S5 actually distills from):
+
+| Chapter | Pages | Total | Solvable | Excluded (figure-essential) |
+|---|---|---|---|---|
+| Front Matter | 1-11 | 0 | 0 | 0 |
+| Introduction | 12-30 | 1 | 1 | 0 |
+| Temperature | 31-43 | 1 | 1 | 0 |
+| Work and Heat Transfer | 44-68 | 0 | 0 | 0 |
+| First Law of Thermodynamics | 69-86 | 1 | 1 | 0 |
+| First Law Applied to Flow Processes | 87-116 | 3 | 2 | 1 |
+| **Second Law of Thermodynamics** | 117-157 | 7 | **7** | 0 |
+| **Entropy** | 158-219 | 8 | **4** | 4 |
+| Available Energy, Exergy and Irreversibility | 220-284 | 2 | 1 | 1 |
+| Properties of Pure Substances | 285-333 | 5 | 3 | 2 |
+| **Properties of Gases and Gas Mixtures** | 334-401 | 7 | **6** | 1 |
+| **Thermodynamic Relations, Equilibrium and Third Law** | 402-482 | 5 | **4** | 1 |
+| **Vapour Power Cycles** | 483-522 | 6 | **4** | 2 |
+| Gas Power Cycles | 523-559 | 2 | 2 | 0 |
+| Refrigeration Cycles | 560-581 | 0 | 0 | 0 |
+| Psychrometrics | 582-597 | 2 | 1 | 1 |
+| Reactive Systems | 598-619 | 2 | 2 | 0 |
+| Compressible Fluid Flow | 620-637 | 1 | 1 | 0 |
+| **Elements of Heat Transfer** | 638-663 | 5 | **4** | 1 |
+| Statistical Thermodynamics | 664-689 | 2 | 2 | 0 |
+| Irreversible Thermodynamics | 690-706 | 0 | 0 | 0 |
+| Kinetic Theory of Gases... | 707-728 | 1 | 0 | 1 |
+| **Transport Processes in Gases** | 729-781 | 5 | **5** | 0 |
+
+**9 of 22 chapters (bolded) have more than 3 solvable concepts** — S7's "max 3 per Section" hard constraint will bind hard across nearly half the book, not just as an occasional edge case, confirming the user's stated concern directly.
+
+**Real S5 result**: 51/51 solvable problems distilled (after the MAX_TOKENS fix), **51 concept cards, 51 distinct clusters, zero merges** — every distilled concept is physically distinct by fingerprint/embedding across the whole real book. 6 LaTeX equations failed to parse (logged, fell back to `UNPARSED::` fingerprint component, not hidden) — mostly `\text{...}` macros and one inequality (`\ge`) that `sympy.parsing.latex` doesn't handle; a real, disclosed gap, not a blocker.
+
+**Real S6 result**: 51/51 scored cleanly, no truncation.
+
+**Real S7 result — the honest headline finding**: pool of 51 **can** reach the raw 20-problem count target, but real hard-constraint results:
+- `[FAIL]` ≥6 distinct topics — got **0**. Direct consequence of the pre-existing, already-documented `match_topic_nodes` gap (keyword-overlap heuristic needs real `TopicNode.aliases`, never fixed this session) — not a new bug, but this is the first real-scale run where its effect on S7 is visible end-to-end.
+- `[FAIL]` ≤3 per Section — got **4** (max). Confirms the per-chapter table above: several chapters have 4+ solvable concepts, over the cap.
+- `[FAIL]` difficulty mix target `{easy:6, medium:9, hard:5}` — got `{easy:0, medium:9, hard:11}`. Real, skewed toward hard; no easy problems at all in the real scored pool.
+- `[FAIL]` 8-12 with eligible extensions — got **20**, i.e. *too many* eligible, not too few.
+- `[PASS]` the other 4 constraints (computational-suitability count, distinct extension types, physics-informed cap, pairwise cosine diversity).
+
+Full non-LLM suite: still 35/35 (re-verified after each fix this run). `ruff check`/`mypy --strict` clean throughout. Every fix committed as its own commit.
+
 ## Next Immediate Task
-Proceeding to the full ~700-page ingest of `Thermodynamics by PK Nag.pdf` now that S2/S3/S5/S6 are real-content-correct and idempotent. Reporting real problems-per-chapter distribution once detection completes (the 30-page excerpt used for earlier estimates was worked-examples-dense with zero end-of-chapter exercises, so the ~187-problem projection is likely low and unevenly distributed — flagging any chapter where S7's "max 3 per Section" hard constraint will bind hard once real per-chapter counts are in).
+Nothing blocking remains for S1-S7 at full-book scale — the pipeline runs end to end on the real 781-page book with idempotent, resumable stages. Real next candidates, not started, no priority order implied:
+- Fix `match_topic_nodes`/`TopicNode.aliases` — now demonstrably the direct cause of S7's "0 distinct topics" failure at real scale, not just a theoretical gap.
+- Decide how to handle the "max 3 per Section" real bind (9/22 chapters over cap) — likely needs either the full MMR/relaxation logic in `selection.py` (built but never exercised beyond the trivial path) to actually kick in, or a product decision about relaxing that constraint.
+- Investigate the real S3 confirm-variance (84 vs 66 on identical input) if problem-count stability matters for reproducibility — not attempted this session, and S3 remains frozen pending the user's own hand-count.
+- Phases P8-P12 (variant generation, codegen/sandbox execution, rendering, ledger, chat) are still not started — this session's work has been entirely S1-S7.
