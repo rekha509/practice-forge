@@ -59,6 +59,16 @@ limits:
   gemini:
     gemini-flash-lite-latest: { rpm: 15, rpd: 1000 }
     gemini-flash-latest: { rpm: 10, rpd: 250 }
+    # gemini-embedding-001 isn't a generate_content model, so it has no
+    # "stage" entry above — embedding.py calls limits_for() directly with
+    # this (provider, model) pair. No real number for this model has been
+    # confirmed anywhere in this repo (checked docs/adr/0006 and 0008 —
+    # both explicitly flag it as unaddressed, not just approximate like
+    # the figures above). Deliberately conservative placeholder pending
+    # verification against https://aistudio.google.com/rate-limit — the
+    # 700-page projection needs only ~2 embedding calls total (100-item
+    # batch cap), so this is far from binding either way.
+    gemini-embedding-001: { rpm: 5, rpd: 100 }
   anthropic:
     claude-haiku-4-5: { rpm: 50, rpd: 100000 }
     claude-sonnet-5: { rpm: 50, rpd: 100000 }
