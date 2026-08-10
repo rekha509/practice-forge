@@ -244,16 +244,27 @@ def _select_with_constraints(
     return selected, relaxations
 
 
-def run_selection(session: Session, book_id: uuid.UUID) -> SelectionResult:
-    clusters = (
-        session.execute(
-            select(ConceptClusterORM)
-            .join(ConceptCardORM, ConceptClusterORM.representative_card_id == ConceptCardORM.id)
-            .where(ConceptCardORM.book_id == book_id)
-        )
-        .scalars()
-        .all()
+def run_selection(
+    session: Session,
+    book_id: uuid.UUID,
+    *,
+    excluded_cluster_ids: frozenset[uuid.UUID] = frozenset(),
+) -> SelectionResult:
+    """`excluded_cluster_ids`: clusters already issued for a course (via
+    IssuedLedgerORM, not `is_recycled`) — the no-repeat guarantee's real
+    enforcement point. Defaults to empty for every existing caller that
+    doesn't yet have a course in scope (rendering the very first set,
+    `pf generate`'s ad-hoc CLI flow); ledger-aware callers must pass the
+    real already-issued set explicitly, not rely on a default that would
+    silently make every "second set" identical to the first."""
+    pool_query = (
+        select(ConceptClusterORM)
+        .join(ConceptCardORM, ConceptClusterORM.representative_card_id == ConceptCardORM.id)
+        .where(ConceptCardORM.book_id == book_id)
     )
+    if excluded_cluster_ids:
+        pool_query = pool_query.where(ConceptClusterORM.id.not_in(excluded_cluster_ids))
+    clusters = session.execute(pool_query).scalars().all()
 
     members: list[PoolMember] = []
     for cluster in clusters:
