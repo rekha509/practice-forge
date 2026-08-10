@@ -289,7 +289,15 @@ def run_detection(
                 final_answer=strip_nul_opt(result.final_answer),
                 figure_ids=[],
                 figure_dependency=FigureDependency.NONE,
-                is_solvable=True,
+                # A derive/prove exercise has no numeric given/find and no
+                # computable final answer — per explicit instruction, this
+                # project targets numerical problems with an executable
+                # Python check (S9), and a proof has nothing for that check
+                # to verify. Excluded here at the same is_solvable flag S4
+                # already uses for figure-dependent exclusions, not a new
+                # column — same meaning ("this SourceProblem cannot feed
+                # the numeric pipeline"), different reason.
+                is_solvable=result.kind != ProblemKind.DERIVATION,
             )
             session.add(problem)
             persisted.append(problem)

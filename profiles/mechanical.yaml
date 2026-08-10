@@ -17,15 +17,22 @@ allowed_extension_types:
 # aliases: real terms a book's own chapter/section titles use for this
 # topic — bare topic names rarely overlap enough with a real chapter title
 # to clear structure.py's TOPIC_MATCH_THRESHOLD via keyword overlap alone
-# (S7's ">= 6 distinct topics" constraint was reporting 0 before this,
-# since match_topic_nodes had nothing but 7 bare names to match against).
-# Thermodynamics' list is informed by the real 22-chapter TOC of
+# (S7's ">= 6 distinct topics" constraint was reporting 0 before aliases
+# existed at all, since match_topic_nodes had nothing but 7 bare names to
+# match against).
+#
+# 2026-08-10: the single "Thermodynamics" node (see git history) was
+# replaced by 12 real subtopics, informed by the real 22-chapter TOC of
 # Thermodynamics by P.K. Nag (this project's real reference book) — almost
-# every one of that book's chapters IS a thermodynamics subtopic, so most
-# of them alias onto this ONE node rather than creating additional
-# distinct matches; that's a real, disclosed limitation of this 7-topic
-# taxonomy's granularity for a single-subject book, not something aliasing
-# alone can fix — see PROGRESS.md.
+# every one of that book's chapters IS a thermodynamics subtopic, so they
+# ALL aliased onto one node and the >=6-distinct-topics constraint was
+# structurally unreachable no matter how good the aliases got (verified:
+# only 3 distinct topics matched across the whole book with the old single
+# node). Chapters not covered by one of these 12 (Introduction,
+# Temperature, Work and Heat Transfer, Statistical Thermodynamics,
+# Irreversible Thermodynamics, Kinetic Theory of Gases, Transport
+# Processes in Gases) are deliberately left unmatched rather than
+# force-fit into a subtopic they don't really belong to.
 topics:
   - name: Strength of Materials
     aliases:
@@ -34,31 +41,73 @@ topics:
       - Torsion
       - Elasticity
       - Mechanics of Materials
-  - name: Thermodynamics
+  - name: First Law
     aliases:
       - First Law of Thermodynamics
+      - First Law Applied to Flow Processes
+      - Conservation of Energy
+      - Internal Energy
+  - name: Second Law
+    aliases:
       - Second Law of Thermodynamics
-      - Entropy
-      - Available Energy
+      - Carnot Cycle
+      - Heat Engines
+      - Clausius Inequality
+  - name: Entropy
+    aliases:
+      - Entropy Generation
+      - Principle of Increase of Entropy
+  - name: Available Energy and Exergy
+    aliases:
+      - Available Energy, Exergy and Irreversibility
       - Exergy
       - Irreversibility
-      - Properties of Pure Substances
+      - Second Law Efficiency
+  - name: Properties of Pure Substances
+    aliases:
       - Properties of Gases and Gas Mixtures
-      - Thermodynamic Relations
+      - Steam Tables
+      - Phase Equilibrium
+      - Quality of Steam
+  - name: Thermodynamic Relations
+    aliases:
+      - Thermodynamic Relations, Equilibrium and Third Law
+      - Maxwell Relations
       - Thermodynamic Equilibrium
-      - Vapour Power Cycles
-      - Gas Power Cycles
+      - Third Law of Thermodynamics
+  - name: Vapour Power Cycles
+    aliases:
+      - Rankine Cycle
+      - Steam Power Plant
+  - name: Gas Power Cycles
+    aliases:
+      - Otto Cycle
+      - Diesel Cycle
+      - Brayton Cycle
+      - Gas Turbine Cycles
+  - name: Refrigeration
+    aliases:
       - Refrigeration Cycles
-      - Psychrometrics
+      - Vapour Compression Refrigeration
+      - Vapour Absorption Refrigeration
+  - name: Psychrometrics
+    aliases:
+      - Psychrometry
+      - Air Conditioning
+      - Humidity
+  - name: Reactive Mixtures
+    aliases:
       - Reactive Systems
       - Combustion
-      - Statistical Thermodynamics
-      - Kinetic Theory of Gases
-      - Work and Heat Transfer
+      - Fuel-Air Mixtures
+  - name: Compressible Flow
+    aliases:
+      - Compressible Fluid Flow
+      - Mach Number
+      - Nozzles and Diffusers
   - name: Fluid Mechanics
     aliases:
       - Fluid Flow
-      - Compressible Fluid Flow
       - Bernoulli's Equation
       - Viscosity
       - Boundary Layer
