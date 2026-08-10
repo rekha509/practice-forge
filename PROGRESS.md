@@ -1,5 +1,5 @@
-## Current Phase: 7 — S7 selection real and fully passing; starting S8/S9
-## Status: S7's selection algorithm bug fixed (was plain top-N, not constrained) — all 7 real hard constraints now PASS with zero relaxation needed, on the real 288-card pool. Moving to S8 (variant generation) and S9 Part A (core solver + execution verification). See bottom-most section for the latest (2026-08-10); sections above it are earlier, superseded-scale runs kept for history.
+## Current Phase: 10 — S1-S10 real end-to-end: 20/20 verified, real PDFs on disk
+## Status: full real pipeline, ingest through rendering. 20/20 selected problems execution-verified (S8+S9 Part A); real student handout + solutions manual PDFs + code/ folder written to disk (S10). See bottom-most section for the latest (2026-08-10); sections above it are earlier, superseded-scale runs kept for history.
 
 **Everything in this run is real.** No synthetic textbook content, no
 hand-tuned fixtures, no stub satisfying a gate. Every number below comes
@@ -309,5 +309,33 @@ Explicit instruction, four parts, all landed:
 
 **All 7 remaining hard constraints pass, no relaxation applied.** Per explicit instruction, not spending further session time tuning this — moving to S8/S9.
 
+## Completed: S8 + S9 Part A + S10, real end-to-end, 20/20 verified, real PDFs on disk (2026-08-10, same day)
+
+Built from scratch this session (no prior scaffolding existed for any of these):
+
+**S8 (`variants/variants.py`)**: one real LLM call per selected concept generates new numeric parameters, a rewritten self-contained problem statement, and a solution-approach step list — deliberately not a trusted final answer; the real number only ever comes from S9 actually running code. `select_extension_attachments` implements the S9-time rule from `docs/adr/0009`: at most 12 of the 20 get an extension attached, ranked by `ml_extension_potential`, preserving >=3 distinct types.
+
+**S9 Part A (`codegen/codegen.py`)**: one real LLM call generates a self-contained Python script; real execution via `sandbox.runner.run_code` determines `verified_answer`/`verification_status` — never the model's own claimed answer. One real retry with actual stderr fed back on failure, never more.
+
+**Real result, full 20-problem set, this book: 20/20 execution-verified.** Two real bugs found and fixed along the way:
+- **RPM burst bug**: two separate `LLMClient()` instances (one for S8, one for S9), both routed to the same model, each got an independent in-memory RPM token bucket (RPD is disk-shared, RPM is not — see `llm/rate_limiter.py`). Their combined burst triggered a real live 429 despite a limiter existing. Fixed: one shared client. Added idempotency to `pf generate` (skip any concept that already has a VERIFIED variant) so a resumed run after a failure doesn't re-spend quota on already-solved problems.
+- **Missing per-discipline sandbox image**: `mechanical.yaml` declares CoolProp as a solver_lib, but no per-discipline image had ever been built — `pf generate` was hardcoded to the shared base image (no CoolProp). One real problem (a back-pressure turbine cogeneration analysis, genuinely needing real steam properties) failed with `ModuleNotFoundError: No module named 'CoolProp'` until `docker/sandbox/mechanical.Dockerfile` was built and `pf generate` was wired to use the book's own `discipline.sandbox_image_tag` instead of a hardcoded default. Verified on retry with the real image.
+- Sanity-checked the first verified answer (Brayton cycle net work output) by hand — the execution-verified 300.75 kJ/kg matches an independent manual calculation from the same isentropic relations, confirming the generated code is actually implementing real thermodynamics, not just running successfully.
+
+**Real quota note**: `gemini-flash-latest`'s real 20/day cap was already spent today by the pre-fix S5 distillation run earlier this same session (documented above), before today's S8/S9 work existed to reserve it. `config/llm_routing.yaml` temporarily routes `s8_variant_generation`/`s9_codegen` to `gemini-flash-lite-latest` for today only — clearly commented as TEMPORARY, standing policy unchanged (reserve flash-latest for S8/S9 once quota resets). **Action item: revert those two routing entries to `gemini-flash-latest` once the daily quota resets (UTC).**
+
+**S10 (`render/render.py`)**: real Typst rendering via the `typst` PyPI package (bundles the compiler). Re-runs the real S7 selection, pairs each selected concept with its own verified Variant, renders a student handout PDF (statements only) and a faculty solutions manual PDF (statement + solution approach + execution-verified answer), and writes each problem's real generated Python to `code/problem_NN.py`. Free-text LLM fields are escaped (`_typst_escape`) before embedding, since Typst's own markup treats `$`, `_`, `*`, `#` etc. specially — this means inline LaTeX in statements renders as literal escaped text, not typeset math, a disclosed simplification, not a silent gap.
+
+**Real files on disk**: `data/generated/4d97664c-50ee-4c77-83b8-7951efae4d60/student_handout.pdf` (40 KB), `solutions_manual.pdf` (145 KB), `code/problem_01.py` through `problem_20.py`.
+
+**Known gaps, disclosed, not attempted this session:**
+- **Ledger-commit** (writing an `IssuedLedger` row so the no-repeat guarantee actually advances) is not implemented — it needs a real `Course` to exist, and nothing in this CLI-driven flow has created one. `ProblemSetORM`/`IssuedLedgerORM` are unused by `run_render`.
+- **LaTeX->Typst math conversion** is not implemented — math renders as literal escaped text (see above), not typeset equations. Real, cosmetic gap.
+- **One harmless duplicate**: the concept cluster for "Brayton cycle performance and comparison" has 2 VERIFIED variant rows (from before the idempotency fix landed) — `run_render` picks the most recent by id and rendered correctly, but the older duplicate is still in the table. Not cleaned up; noted rather than silently left unmentioned.
+- A real `SandboxRunnerClient` HTTP wrapper for the worker's actual deployment path (per `docs/adr/0002`) is still not built — this session's `pf generate`/`pf render` call `sandbox.runner.run_code` directly, appropriate for a CLI-driven flow on the host but not for the containerized worker.
+
 ## Next Immediate Task
-Build S8 (variant generation) and S9 Part A (core solver + execution verification) against the real, passing 20-problem selection above. Target: at least one real problem taken all the way through variant generation, code generation, sandbox execution, and a verified numeric answer, this session.
+1. Revert `config/llm_routing.yaml`'s `s8_variant_generation`/`s9_codegen` to `gemini-flash-latest` once its daily quota resets (UTC) — today's routing to flash-lite was an explicitly-temporary, same-day workaround.
+2. Decide whether ledger-commit (real `Course` + `ProblemSetORM` + `IssuedLedgerORM`) is needed before this is usable end-to-end for a real faculty user, or whether the current PDF-on-disk output is sufficient for now.
+3. LaTeX->Typst math conversion, if properly typeset equations matter for the final deliverable's polish.
+4. Everything else in this file's earlier "real product decisions pending" sections (topic taxonomy granularity, derive/prove prompt clarity) remains open and un-decided by the user.
