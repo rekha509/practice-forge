@@ -15,12 +15,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from practice_forge.db.base import session_scope
 from practice_forge.db.models import JobORM
 from practice_forge.models.enums import JobStatus
+
+from ..deps import get_db
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -75,16 +78,22 @@ def job_status_payload(job: JobORM) -> dict[str, Any]:
 
 
 @router.get("/{job_id}")
-def get_job(job_id: uuid.UUID) -> dict[str, Any]:
-    with session_scope() as session:
-        job = session.get(JobORM, job_id)
-        if job is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
-        return job_status_payload(job)
+def get_job(job_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
+    job = db.get(JobORM, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
+    return job_status_payload(job)
 
 
 @router.get("/{job_id}/stream")
 async def stream_job(job_id: uuid.UUID, request: Request) -> EventSourceResponse:
+    # Deliberately NOT `Depends(get_db)`: a stream can stay open for
+    # minutes, and holding one request-scoped session/connection for the
+    # whole duration (rather than one short-lived session per poll) would
+    # tie up a pool connection the entire time for no benefit. Real DB
+    # access only (see `session_scope`'s own docstring) — not swapped in
+    # tests, which is why the SSE stream itself is only exercised by the
+    # real end-to-end test (test_api_e2e.py), not the fast Tier A suite.
     async def event_generator() -> Any:
         last_sent: str | None = None
         while True:

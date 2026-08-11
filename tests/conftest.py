@@ -26,9 +26,15 @@ from practice_forge.db.models import (
     CandidateScoreORM,
     ConceptCardORM,
     ConceptClusterORM,
+    CourseORM,
+    FacultyORM,
+    IssuedLedgerORM,
+    JobORM,
     PageORM,
+    ProblemSetORM,
     SectionORM,
     SourceProblemORM,
+    VariantORM,
 )
 from practice_forge.profiles.sync import sync_disciplines, sync_topic_nodes
 
@@ -54,7 +60,15 @@ def db_session() -> Iterator[Session]:
     # reference books. concept_clusters is discipline-scoped, not
     # book-scoped (see concepts.py's _cluster_cards) — must be cleared too,
     # or a stale cluster from a prior test's run could wrongly "match" a
-    # fresh test's card via the cross-run clustering path.
+    # fresh test's card via the cross-run clustering path. P10's
+    # issued_ledger/jobs/problem_sets/variants/courses/faculty added later
+    # (test_api.py) — deleted in dependency order: ledger/jobs/problem_sets
+    # before what they reference, variants before concept_clusters, and
+    # courses/faculty last since jobs/problem_sets/ledger reference them.
+    session.execute(delete(IssuedLedgerORM))
+    session.execute(delete(JobORM))
+    session.execute(delete(ProblemSetORM))
+    session.execute(delete(VariantORM))
     session.execute(delete(CandidateScoreORM))
     session.execute(delete(ConceptClusterORM))
     session.execute(delete(ConceptCardORM))
@@ -62,6 +76,8 @@ def db_session() -> Iterator[Session]:
     session.execute(delete(SectionORM))
     session.execute(delete(PageORM))
     session.execute(delete(BookORM))
+    session.execute(delete(CourseORM))
+    session.execute(delete(FacultyORM))
     session.commit()
     try:
         yield session
