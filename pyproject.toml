@@ -82,5 +82,13 @@ exclude = ["tests/fixtures", "code/", "scripts/"]
 [tool.pytest.ini_options]
 markers = [
     "llm: marks tests that make real LLM API calls (deselect with -m 'not llm')",
+    "e2e: marks tests needing a real subprocess Celery worker + Docker sandbox (deselect with -m 'not e2e')",
 ]
 testpaths = ["tests"]
+# Real, previously-undisclosed gap found while scoping test_api_e2e.py:
+# nothing enforced the "deselect with -m 'not llm'" the marker's own
+# description implied — every plain `pytest`/`pytest -q` run this whole
+# session actually executed test_detection.py's real Gemini call too,
+# silently. Fixed here: `llm` and `e2e` are excluded by default; run
+# them explicitly with `-m llm` / `-m e2e`.
+addopts = "-m 'not llm and not e2e'"
