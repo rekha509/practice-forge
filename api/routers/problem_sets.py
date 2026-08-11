@@ -149,6 +149,7 @@ def get_problem_set(problem_set_id: uuid.UUID, db: Session = Depends(get_db)) ->
                 statement_md=variant.statement_md,
                 difficulty=variant.difficulty.value,
                 solution_steps=variant.solution_steps,
+                core_python_code=variant.core_python_code,
                 verified_answer=variant.verified_answer,
                 extension_type=variant.extension_type.value,
             )

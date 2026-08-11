@@ -94,6 +94,7 @@ class ProblemPreview(BaseModel):
     statement_md: str
     difficulty: str
     solution_steps: list[str]
+    core_python_code: str
     verified_answer: str | None
     extension_type: str
 

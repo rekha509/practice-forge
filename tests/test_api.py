@@ -573,6 +573,7 @@ def test_get_problem_set_detail_includes_preview(
     assert len(body["problems"]) == 1
     assert body["problems"][0]["statement_md"] == variant.statement_md
     assert body["problems"][0]["verified_answer"] == variant.verified_answer
+    assert body["problems"][0]["core_python_code"] == variant.core_python_code
 
 
 def test_download_handout_and_solutions_pdfs(
