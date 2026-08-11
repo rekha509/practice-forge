@@ -22,6 +22,7 @@ gate the 20-problem set on.
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field
 
@@ -93,7 +94,32 @@ def _assign_percentile_difficulty(members: list[PoolMember]) -> None:
             m.difficulty_tier = "hard"
 
 
-def _check_hard_constraints(members: list[PoolMember]) -> dict[str, bool]:
+def _scale_difficulty_mix(target_set_size: int) -> dict[str, int]:
+    """Scales the base 6:9:5 (easy:medium:hard) ratio to an arbitrary
+    `target_set_size`, largest-remainder method so the three counts always
+    sum to exactly `target_set_size` — at 20 (the original, still-default
+    target) this reduces to the literal `{6, 9, 5}` DIFFICULTY_TARGET
+    already covered by every existing test, so nothing about the default
+    20-problem path changes."""
+    base_total = sum(DIFFICULTY_TARGET.values())
+    ratios = {k: v / base_total for k, v in DIFFICULTY_TARGET.items()}
+    floors = {k: int(ratios[k] * target_set_size) for k in DIFFICULTY_TARGET}
+    remainder = target_set_size - sum(floors.values())
+    remainders = sorted(
+        DIFFICULTY_TARGET, key=lambda k: (ratios[k] * target_set_size) - floors[k], reverse=True
+    )
+    for k in remainders[:remainder]:
+        floors[k] += 1
+    return floors
+
+
+def _check_hard_constraints(
+    members: list[PoolMember],
+    *,
+    max_per_section: int = MAX_PER_SECTION,
+    difficulty_target: dict[str, int] | None = None,
+) -> dict[str, bool]:
+    difficulty_target = difficulty_target or DIFFICULTY_TARGET
     distinct_topics = {t for m in members for t in m.card.topic_node_ids}
     per_section: dict[uuid.UUID, int] = {}
     for m in members:
@@ -121,12 +147,12 @@ def _check_hard_constraints(members: list[PoolMember]) -> dict[str, bool]:
             distinct_topics
         )
         >= MIN_DISTINCT_TOPICS,
-        f"<= {MAX_PER_SECTION} per section (max got {max(per_section.values(), default=0)})": max(
+        f"<= {max_per_section} per section (max got {max(per_section.values(), default=0)})": max(
             per_section.values(), default=0
         )
-        <= MAX_PER_SECTION,
-        f"difficulty mix {DIFFICULTY_TARGET} (got {difficulty_counts})": difficulty_counts
-        == DIFFICULTY_TARGET,
+        <= max_per_section,
+        f"difficulty mix {difficulty_target} (got {difficulty_counts})": difficulty_counts
+        == difficulty_target,
         f">= {MIN_COMPUTATIONAL_HIGH} with computational_suitability>=4 (got {computational_high})": computational_high
         >= MIN_COMPUTATIONAL_HIGH,
         f">= {MIN_DISTINCT_EXTENSION_TYPES} distinct extension types (got {len(distinct_extension_types)})": len(
@@ -142,6 +168,10 @@ def _check_hard_constraints(members: list[PoolMember]) -> dict[str, bool]:
 
 def _select_with_constraints(
     members: list[PoolMember],
+    *,
+    target_set_size: int = TARGET_SET_SIZE,
+    difficulty_target: dict[str, int] | None = None,
+    max_per_section: int = MAX_PER_SECTION,
 ) -> tuple[list[PoolMember], list[str]]:
     """Greedy constrained selection. Hard filters (section cap,
     physics-informed cap, pairwise-cosine cap) are enforced turn-by-turn
@@ -153,8 +183,9 @@ def _select_with_constraints(
     that's the FIRST constraint relaxed (see docs/adr/0009's declared
     order) — backfilling from the remaining pool by score, logged, not
     silent. Pairwise-cosine is relaxed last, only if the set would
-    otherwise come in under TARGET_SET_SIZE.
+    otherwise come in under `target_set_size`.
     """
+    difficulty_target = difficulty_target or DIFFICULTY_TARGET
     _assign_percentile_difficulty(members)
     by_tier: dict[str, list[PoolMember]] = {"easy": [], "medium": [], "hard": []}
     for m in members:
@@ -172,7 +203,7 @@ def _select_with_constraints(
         return ExtensionType.PHYSICS_INFORMED.value in m.score.eligible_extension_types
 
     def fits(m: PoolMember, *, ignore_cosine: bool = False) -> bool:
-        if per_section.get(m.card.section_id, 0) >= MAX_PER_SECTION:
+        if per_section.get(m.card.section_id, 0) >= max_per_section:
             return False
         if is_physics(m) and physics_informed_count >= MAX_PHYSICS_INFORMED:
             return False
@@ -191,9 +222,9 @@ def _select_with_constraints(
             physics_informed_count += 1
 
     for tier, target in (
-        ("easy", DIFFICULTY_TARGET["easy"]),
-        ("medium", DIFFICULTY_TARGET["medium"]),
-        ("hard", DIFFICULTY_TARGET["hard"]),
+        ("easy", difficulty_target["easy"]),
+        ("medium", difficulty_target["medium"]),
+        ("hard", difficulty_target["hard"]),
     ):
         taken = 0
         for m in by_tier[tier]:
@@ -203,7 +234,7 @@ def _select_with_constraints(
                 take(m)
                 taken += 1
 
-    if len(selected) < TARGET_SET_SIZE:
+    if len(selected) < target_set_size:
         remaining = sorted(
             (m for m in members if m.card.id not in selected_ids),
             key=lambda m: m.score.composite_score,
@@ -211,18 +242,19 @@ def _select_with_constraints(
         )
         before = len(selected)
         for m in remaining:
-            if len(selected) >= TARGET_SET_SIZE:
+            if len(selected) >= target_set_size:
                 break
             if fits(m):
                 take(m)
         if len(selected) > before:
             relaxations.append(
-                f"difficulty mix {DIFFICULTY_TARGET}: backfilled {len(selected) - before} "
-                "beyond the exact per-tier targets to reach the 20-problem target size — "
-                "at least one tier didn't have enough constraint-respecting candidates"
+                f"difficulty mix {difficulty_target}: backfilled {len(selected) - before} "
+                f"beyond the exact per-tier targets to reach the {target_set_size}-problem "
+                "target size — at least one tier didn't have enough constraint-respecting "
+                "candidates"
             )
 
-    if len(selected) < TARGET_SET_SIZE:
+    if len(selected) < target_set_size:
         remaining = sorted(
             (m for m in members if m.card.id not in selected_ids),
             key=lambda m: m.score.composite_score,
@@ -230,15 +262,16 @@ def _select_with_constraints(
         )
         before = len(selected)
         for m in remaining:
-            if len(selected) >= TARGET_SET_SIZE:
+            if len(selected) >= target_set_size:
                 break
             if fits(m, ignore_cosine=True):
                 take(m)
         if len(selected) > before:
             relaxations.append(
                 f"pairwise cosine diversity (< {MAX_PAIRWISE_COSINE}): relaxed to add "
-                f"{len(selected) - before} more and reach the 20-problem target size — "
-                "section/physics-informed caps alone left the pool too thin without it"
+                f"{len(selected) - before} more and reach the {target_set_size}-problem "
+                "target size — section/physics-informed caps alone left the pool too thin "
+                "without it"
             )
 
     return selected, relaxations
@@ -249,6 +282,9 @@ def run_selection(
     book_id: uuid.UUID,
     *,
     excluded_cluster_ids: frozenset[uuid.UUID] = frozenset(),
+    section_ids: frozenset[uuid.UUID] | None = None,
+    target_set_size: int = TARGET_SET_SIZE,
+    difficulty_mix: dict[str, int] | None = None,
 ) -> SelectionResult:
     """`excluded_cluster_ids`: clusters already issued for a course (via
     IssuedLedgerORM, not `is_recycled`) — the no-repeat guarantee's real
@@ -256,7 +292,31 @@ def run_selection(
     doesn't yet have a course in scope (rendering the very first set,
     `pf generate`'s ad-hoc CLI flow); ledger-aware callers must pass the
     real already-issued set explicitly, not rely on a default that would
-    silently make every "second set" identical to the first."""
+    silently make every "second set" identical to the first.
+
+    `section_ids`: None or empty means the WHOLE BOOK (default,
+    unchanged) — every existing caller passes neither of the new
+    parameters and gets byte-for-bit the same behavior as before this was
+    added. When a real subset of sections is given, the pool is filtered
+    to just those sections' cards AND the per-section cap scales up from
+    the flat `MAX_PER_SECTION=3` to `max(3, ceil(target_set_size /
+    len(section_ids)))` — with <=3 sections selected, a flat cap of 3
+    would make the target size structurally unreachable (e.g. 2 sections
+    x 3 = 6 < 20), so the cap must scale with how few sections there are
+    to draw from.
+
+    `difficulty_mix`: an explicit `{"easy": n, "medium": n, "hard": n}`
+    override (must sum to `target_set_size`); None (default) scales the
+    base 6:9:5 ratio proportionally via `_scale_difficulty_mix`, which is
+    the exact literal `{6, 9, 5}` when `target_set_size` is the default
+    20."""
+    if difficulty_mix is not None and sum(difficulty_mix.values()) != target_set_size:
+        raise ValueError(
+            f"difficulty_mix {difficulty_mix} sums to {sum(difficulty_mix.values())}, "
+            f"not target_set_size={target_set_size}"
+        )
+    difficulty_target = difficulty_mix or _scale_difficulty_mix(target_set_size)
+
     pool_query = (
         select(ConceptClusterORM)
         .join(ConceptCardORM, ConceptClusterORM.representative_card_id == ConceptCardORM.id)
@@ -264,7 +324,15 @@ def run_selection(
     )
     if excluded_cluster_ids:
         pool_query = pool_query.where(ConceptClusterORM.id.not_in(excluded_cluster_ids))
+    if section_ids:
+        pool_query = pool_query.where(ConceptCardORM.section_id.in_(section_ids))
     clusters = session.execute(pool_query).scalars().all()
+
+    max_per_section = (
+        max(MAX_PER_SECTION, math.ceil(target_set_size / len(section_ids)))
+        if section_ids
+        else MAX_PER_SECTION
+    )
 
     members: list[PoolMember] = []
     for cluster in clusters:
@@ -280,28 +348,41 @@ def run_selection(
     if members:
         _assign_percentile_difficulty(members)
 
-    if len(members) < TARGET_SET_SIZE:
+    if len(members) < target_set_size:
         return SelectionResult(
             pool_size=len(members),
             selected=members,
-            constraints_satisfied=_check_hard_constraints(members) if members else {},
+            constraints_satisfied=(
+                _check_hard_constraints(
+                    members, max_per_section=max_per_section, difficulty_target=difficulty_target
+                )
+                if members
+                else {}
+            ),
             can_reach_target=False,
             reason=(
                 f"only {len(members)} unissued, scored concept clusters exist for this "
-                f"book — cannot reach the {TARGET_SET_SIZE}-problem target. Not relaxed/"
-                "faked to look complete; this is the honest constraint-checked state of "
-                "the real pool."
+                f"book{' / selected sections' if section_ids else ''} — cannot reach the "
+                f"{target_set_size}-problem target. Not relaxed/faked to look complete; "
+                "this is the honest constraint-checked state of the real pool."
             ),
         )
 
-    selected, relaxations = _select_with_constraints(members)
+    selected, relaxations = _select_with_constraints(
+        members,
+        target_set_size=target_set_size,
+        difficulty_target=difficulty_target,
+        max_per_section=max_per_section,
+    )
     reason = "real constrained selection: hard-filtered during construction, not top-N by score"
     if relaxations:
         reason += f"; relaxed {len(relaxations)} constraint(s) per docs/adr/0009's declared order"
     return SelectionResult(
         pool_size=len(members),
         selected=selected,
-        constraints_satisfied=_check_hard_constraints(selected),
+        constraints_satisfied=_check_hard_constraints(
+            selected, max_per_section=max_per_section, difficulty_target=difficulty_target
+        ),
         can_reach_target=True,
         reason=reason,
         relaxations_applied=relaxations,

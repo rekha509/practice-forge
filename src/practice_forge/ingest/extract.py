@@ -12,9 +12,11 @@ later only touches this one function.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from pypdf import PdfReader
+from pypdf._page import PageObject
 
 _MATH_HINTS = re.compile(r"[=∫∑√±×÷≤≥∂∇]|\\frac|\\int|\\sum")
 _UNIT_HINTS = {
@@ -41,28 +43,47 @@ def _detect_unit_system(text: str) -> str | None:
     return None
 
 
-def extract_pages(pdf_path: str) -> list[PageExtraction]:
+def _extract_one_page(page: PageObject, page_no: int) -> PageExtraction:
+    # Real bug, hit live at full-book (781-page) scale, never at the
+    # 30/80-page excerpts: pypdf occasionally extracts a literal NUL
+    # (0x00) byte from certain embedded fonts/OCR artifacts, which
+    # Postgres text columns reject outright ("PostgreSQL text fields
+    # cannot contain NUL bytes") — and since that surfaces at INSERT
+    # time, not extraction time, it silently poisoned an entire
+    # already-LLM-confirmed batch downstream. Stripped at the source
+    # so every consumer is protected, not just the one that happened
+    # to trip over it first.
+    text = (page.extract_text() or "").replace("\x00", "")
+    return PageExtraction(
+        page_no=page_no,
+        markdown=text,
+        has_math=bool(_MATH_HINTS.search(text)),
+        has_figure=len(page.images) > 0 if hasattr(page, "images") else False,
+        unit_system_detected=_detect_unit_system(text),
+        extraction_confidence=0.9 if text.strip() else 0.1,
+    )
+
+
+def page_count(pdf_path: str) -> int:
+    """Cheap: PDF page count lives in the file's page tree, not its
+    content — reading it doesn't require extracting any page text. Used to
+    give a real ETA denominator before extraction (which IS per-page work)
+    even starts."""
+    return len(PdfReader(pdf_path).pages)
+
+
+def iter_pages(pdf_path: str) -> Iterator[PageExtraction]:
+    """Same real per-page extraction as `extract_pages`, but yielded one
+    page at a time so a caller (see
+    `ingest/pipeline.py::run_ingest_resumable`) can persist and commit
+    after each page — real crash-resume at page granularity, not just
+    "resume once the whole file has been extracted." `extract_pages` below
+    is unchanged and still extracts everything into memory first; this
+    doesn't replace it, existing callers (`pf ingest`) are unaffected."""
     reader = PdfReader(pdf_path)
-    pages: list[PageExtraction] = []
     for i, page in enumerate(reader.pages, start=1):
-        # Real bug, hit live at full-book (781-page) scale, never at the
-        # 30/80-page excerpts: pypdf occasionally extracts a literal NUL
-        # (0x00) byte from certain embedded fonts/OCR artifacts, which
-        # Postgres text columns reject outright ("PostgreSQL text fields
-        # cannot contain NUL bytes") — and since that surfaces at INSERT
-        # time, not extraction time, it silently poisoned an entire
-        # already-LLM-confirmed batch downstream. Stripped at the source
-        # so every consumer is protected, not just the one that happened
-        # to trip over it first.
-        text = (page.extract_text() or "").replace("\x00", "")
-        pages.append(
-            PageExtraction(
-                page_no=i,
-                markdown=text,
-                has_math=bool(_MATH_HINTS.search(text)),
-                has_figure=len(page.images) > 0 if hasattr(page, "images") else False,
-                unit_system_detected=_detect_unit_system(text),
-                extraction_confidence=0.9 if text.strip() else 0.1,
-            )
-        )
-    return pages
+        yield _extract_one_page(page, i)
+
+
+def extract_pages(pdf_path: str) -> list[PageExtraction]:
+    return list(iter_pages(pdf_path))

@@ -35,7 +35,7 @@ import typst
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from practice_forge.db.models import ConceptCardORM, VariantORM
+from practice_forge.db.models import ConceptCardORM, ConceptClusterORM, VariantORM
 from practice_forge.models.enums import VerificationStatus
 from practice_forge.selection.selection import run_selection
 
@@ -302,6 +302,42 @@ def _collect_rendered_problems(session: Session, book_id: uuid.UUID) -> list[Ren
     return problems
 
 
+def _collect_rendered_problems_from_variant_ids(
+    session: Session, variant_ids: list[uuid.UUID]
+) -> list[RenderedProblem]:
+    """For the API/worker path (P10): an already-generated, already-
+    persisted `ProblemSet` renders exactly the variants it was created
+    with, in the order given — NOT whatever `run_selection` would pick if
+    re-run right now (which could differ if the pool changed since). Every
+    id must resolve to a real, VERIFIED variant; a missing/unverified one
+    is a caller bug (the set shouldn't have been created with it), so this
+    raises rather than silently skipping, unlike `_collect_rendered_problems`
+    above."""
+    problems: list[RenderedProblem] = []
+    for i, variant_id in enumerate(variant_ids, start=1):
+        variant = session.get(VariantORM, variant_id)
+        if variant is None or variant.verification_status != VerificationStatus.VERIFIED:
+            raise ValueError(f"variant {variant_id} is missing or not verified")
+        cluster = session.get(ConceptClusterORM, variant.concept_cluster_id)
+        assert cluster is not None
+        card = session.get(ConceptCardORM, cluster.representative_card_id)
+        assert card is not None
+        problems.append(RenderedProblem(index=i, card=card, variant=variant))
+    return problems
+
+
+def render_variant_ids(
+    session: Session, variant_ids: list[uuid.UUID], out_dir: Path, title: str
+) -> RenderResult:
+    """Same rendering as `run_render`, but over an explicit, already-
+    decided variant list rather than re-deriving "whatever S7 would select
+    right now" — the real entry point for the API's generate/reshuffle/
+    new-set flows, each of which needs to render the SPECIFIC set it just
+    created, not the book's current top selection."""
+    problems = _collect_rendered_problems_from_variant_ids(session, variant_ids)
+    return _render_problems(problems, out_dir, title)
+
+
 def _student_handout_typst(problems: list[RenderedProblem], title: str) -> str:
     lines = [
         "#set page(margin: 1in)",
@@ -344,8 +380,7 @@ def _solutions_manual_typst(problems: list[RenderedProblem], title: str) -> str:
     return "\n\n".join(lines)
 
 
-def run_render(session: Session, book_id: uuid.UUID, out_dir: Path, title: str) -> RenderResult:
-    problems = _collect_rendered_problems(session, book_id)
+def _render_problems(problems: list[RenderedProblem], out_dir: Path, title: str) -> RenderResult:
     if not problems:
         raise ValueError("no verified problems to render for this book yet")
 
@@ -374,3 +409,8 @@ def run_render(session: Session, book_id: uuid.UUID, out_dir: Path, title: str) 
         code_dir=str(code_dir),
         problem_count=len(problems),
     )
+
+
+def run_render(session: Session, book_id: uuid.UUID, out_dir: Path, title: str) -> RenderResult:
+    problems = _collect_rendered_problems(session, book_id)
+    return _render_problems(problems, out_dir, title)

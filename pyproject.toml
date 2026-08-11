@@ -20,6 +20,7 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "sse-starlette>=2.1",
+    "python-multipart>=0.0.9",  # required by FastAPI for multipart/form-data request bodies
     "pint>=0.24",
     "numpy>=1.26",
     "sympy>=1.12",
@@ -56,19 +57,27 @@ python_version = "3.12"
 strict = true
 exclude = ["tests/fixtures", "code/", "scripts/"]
 
-# docker-py and datasketch ship no py.typed marker / stub package.
+# docker-py, datasketch, and celery ship no py.typed marker / stub package.
 [[tool.mypy.overrides]]
-module = ["docker", "docker.*", "datasketch", "datasketch.*", "sympy", "sympy.*"]
+module = ["docker", "docker.*", "datasketch", "datasketch.*", "sympy", "sympy.*", "celery", "celery.*"]
 ignore_missing_imports = true
 # No py.typed marker; mypy still walks docker's untyped source (rather than
 # treating the import as opaque) and trips over its dynamic re-exports
-# (docker/client.py's from_env). Treat both as opaque Any instead.
+# (docker/client.py's from_env). Treat both as opaque Any instead. Same
+# deal for celery: no stubs, and its untyped `@task` decorator would
+# otherwise make every task function `Untyped decorator` under `strict`.
 follow_imports = "skip"
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
 exclude = ["tests/fixtures", "code/", "scripts/"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency-injection idiom requires `Depends(...)` as an
+# argument default — B008 doesn't know about FastAPI's special-casing of
+# this pattern (same rationale FastAPI's own docs give for disabling it).
+"api/**/*.py" = ["B008"]
 
 [tool.pytest.ini_options]
 markers = [

@@ -35,6 +35,8 @@ from practice_forge.models.enums import (
     FigureDependency,
     FigureKind,
     IngestStatus,
+    JobKind,
+    JobStatus,
     ProblemKind,
     VerificationStatus,
 )
@@ -79,6 +81,19 @@ class TopicNodeORM(Base):
     syllabus_code: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class FacultyORM(Base):
+    """Minimum viable identity (see docs/adr/0010): a per-faculty bearer
+    token, no passwords, no sessions. Distinguishes who is asking so
+    IssuedLedger writes scope to the right Course, nothing more."""
+
+    __tablename__ = "faculty"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    institution: Mapped[str] = mapped_column(String, nullable=False)
+    token: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+
+
 class CourseORM(Base):
     __tablename__ = "courses"
 
@@ -86,6 +101,14 @@ class CourseORM(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     discipline_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("disciplines.id"), nullable=False
+    )
+    # faculty_id is the real ownership check the API enforces; faculty_name
+    # stays as the free-text display value S10's rendered PDFs already use
+    # (unchanged, not derived from FacultyORM, since a course's printed
+    # faculty name shouldn't silently change if the owning account is ever
+    # renamed/reassigned).
+    faculty_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("faculty.id"), nullable=True
     )
     faculty_name: Mapped[str] = mapped_column(String, nullable=False)
     institution: Mapped[str] = mapped_column(String, nullable=False)
@@ -379,3 +402,66 @@ class IssuedLedgerORM(Base):
             postgresql_where=text("is_recycled = false"),
         ),
     )
+
+
+class JobORM(Base):
+    """One row per async unit of work the API hands to Celery: a chunked
+    upload + ingest, or a generate/reshuffle/new-set run. `GET
+    /api/jobs/{id}/stream` (P10) polls this row for SSE progress — real
+    progress persisted here, not a fake spinner. `bytes_*` fields are used
+    only during an ingest job's `uploading` stage (before the Celery task
+    even starts); `pages_*` during its `extracting` stage; `items_*` is a
+    generic counter for non-page-granular stages (S8/S9 items generated).
+    """
+
+    __tablename__ = "jobs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    kind: Mapped[JobKind] = mapped_column(SAEnum(JobKind, native_enum=False), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        SAEnum(JobStatus, native_enum=False), nullable=False, default=JobStatus.QUEUED
+    )
+    stage: Mapped[str] = mapped_column(String, nullable=False, default="")
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    bytes_received: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bytes_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pages_done: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pages_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    items_done: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    items_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Ingest-only: where the chunked upload is being assembled on disk, and
+    # the ingest-time inputs the task needs once the upload completes.
+    upload_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    discipline_key: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Generate/reshuffle/new-set inputs (section_ids, count, difficulty_mix,
+    # excluded_cluster_ids) live here, not just as Celery task arguments —
+    # every job kind's real inputs are durable on this row, one consistent
+    # pattern, even though only ingest's crash-resume actually depends on
+    # it today.
+    params: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    # Generate/reshuffle/new-set-only inputs, and every kind's result refs.
+    book_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("books.id"), nullable=True
+    )
+    course_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("courses.id"), nullable=True
+    )
+    result_problem_set_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("problem_sets.id"), nullable=True
+    )
+
+    created_by_faculty_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("faculty.id"), nullable=True
+    )
+    # Real ETA is derived from (pages_done / elapsed since extraction_started_at)
+    # at read time (see api/routers/jobs.py) — never persisted as a
+    # precomputed rate, so it always reflects this run's own observed speed.
+    extraction_started_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)

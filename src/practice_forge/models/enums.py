@@ -61,3 +61,18 @@ class VerificationStatus(StrEnum):
     VERIFIED = "verified"
     FAILED = "failed"
     NEEDS_REVIEW = "needs_review"
+
+
+class JobKind(StrEnum):
+    INGEST = "ingest"
+    GENERATE = "generate"
+    RESHUFFLE = "reshuffle"
+    NEW_SET = "new_set"
+
+
+class JobStatus(StrEnum):
+    UPLOADING = "uploading"  # ingest jobs only: chunked upload still in progress
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
