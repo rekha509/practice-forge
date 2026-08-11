@@ -86,6 +86,10 @@ class ProblemSetSummary(BaseModel):
     run_number: int
     problem_count: int
     created_at: datetime
+    # How many of the source book's concept clusters are NOT yet issued to
+    # this course — the real number "New set" would draw from next, so
+    # exhaustion is never a surprise (real requirement, not decorative).
+    remaining_concepts: int
 
 
 class ProblemPreview(BaseModel):

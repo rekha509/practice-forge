@@ -39,6 +39,7 @@ from practice_forge.db.models import (
     CourseORM,
     DisciplineORM,
     FacultyORM,
+    IssuedLedgerORM,
     JobORM,
     ProblemSetORM,
     SectionORM,
@@ -173,6 +174,72 @@ def _make_book_with_cluster(db: Session) -> tuple[uuid.UUID, uuid.UUID, uuid.UUI
     db.add(cluster)
     db.commit()
     return book.id, section.id, cluster.id
+
+
+def _add_extra_cluster(db: Session, book_id: uuid.UUID, section_id: uuid.UUID) -> uuid.UUID:
+    """A second real concept card + cluster in an ALREADY-existing book/
+    section — for tests that need more than one cluster to draw on
+    (e.g. remaining_concepts, which is meaningless with a pool of 1)."""
+    book = db.get(BookORM, book_id)
+    assert book is not None
+    problem = SourceProblemORM(
+        id=uuid.uuid4(),
+        book_id=book_id,
+        section_id=section_id,
+        page_no=2,
+        kind=ProblemKind.WORKED_EXAMPLE,
+        statement_md="A second problem.",
+        is_solvable=True,
+    )
+    db.add(problem)
+    db.flush()
+    embedding = [0.0] * 3072
+    embedding[1] = 1.0
+    card = ConceptCardORM(
+        id=uuid.uuid4(),
+        book_id=book_id,
+        section_id=section_id,
+        source_problem_id=problem.id,
+        name="concept-2",
+        topic_node_ids=[],
+        governing_equations_latex=["F = m a"],
+        canonical_equation_srepr=["UNPARSED::F = m a"],
+        solution_strategy="solve",
+        given_dimensions=["mass"],
+        solve_for_dimension="force",
+        method_tag="method-2",
+        concept_fingerprint="fp-2",
+        embedding=embedding,
+        source_pages=[2],
+    )
+    db.add(card)
+    db.flush()
+    db.add(
+        CandidateScoreORM(
+            id=uuid.uuid4(),
+            concept_card_id=card.id,
+            pedagogical_value=0.5,
+            computational_suitability=5,
+            self_containedness=0.5,
+            syllabus_centrality=0.5,
+            verifiability=0.5,
+            ml_extension_potential=0.5,
+            difficulty=DifficultyLevel.MEDIUM,
+            eligible_extension_types=["surrogate_model"],
+            composite_score=0.5,
+            scoring_rationale={},
+        )
+    )
+    cluster = ConceptClusterORM(
+        id=uuid.uuid4(),
+        discipline_id=book.discipline_id,
+        representative_card_id=card.id,
+        member_card_ids=[card.id],
+        centroid_embedding=embedding,
+    )
+    db.add(cluster)
+    db.commit()
+    return cluster.id
 
 
 def _make_variant(db: Session, cluster_id: uuid.UUID, *, verified: bool = True) -> VariantORM:
@@ -574,6 +641,33 @@ def test_get_problem_set_detail_includes_preview(
     assert body["problems"][0]["statement_md"] == variant.statement_md
     assert body["problems"][0]["verified_answer"] == variant.verified_answer
     assert body["problems"][0]["core_python_code"] == variant.core_python_code
+
+
+def test_remaining_concepts_counts_unissued_clusters_for_the_course(
+    client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
+    course = _make_course(db_session, faculty=None)
+    book_id, section_id, cluster_id = _make_book_with_cluster(db_session)
+    _add_extra_cluster(db_session, book_id, section_id)  # 2 clusters total, only 1 issued below
+
+    variant = _make_variant(db_session, cluster_id)
+    problem_set = _make_rendered_problem_set(db_session, course.id, [variant.id], tmp_path)
+    db_session.add(
+        IssuedLedgerORM(
+            id=uuid.uuid4(),
+            course_id=course.id,
+            concept_cluster_id=cluster_id,
+            variant_id=variant.id,
+            problem_set_id=problem_set.id,
+            issued_at=datetime.now(UTC),
+            is_recycled=False,
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/problem-sets/{problem_set.id}")
+    assert resp.status_code == 200
+    assert resp.json()["remaining_concepts"] == 1  # 2 total - 1 issued
 
 
 def test_download_handout_and_solutions_pdfs(

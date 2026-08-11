@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from practice_forge.db.models import (
@@ -26,6 +26,7 @@ from practice_forge.db.models import (
     ConceptClusterORM,
     CourseORM,
     FacultyORM,
+    IssuedLedgerORM,
     JobORM,
     ProblemSetORM,
     VariantORM,
@@ -79,7 +80,32 @@ def _get_problem_set_or_404(db: Session, problem_set_id: uuid.UUID) -> ProblemSe
     return problem_set
 
 
-def _to_summary(problem_set: ProblemSetORM) -> ProblemSetSummary:
+def _remaining_concepts(db: Session, course_id: uuid.UUID, book_id: uuid.UUID) -> int:
+    """How many of the book's real concept clusters are NOT yet issued to
+    this course — what "New set" would actually have left to draw from.
+    Real counts, not a decorative estimate."""
+    total = db.execute(
+        select(func.count())
+        .select_from(ConceptClusterORM)
+        .join(ConceptCardORM, ConceptClusterORM.representative_card_id == ConceptCardORM.id)
+        .where(ConceptCardORM.book_id == book_id)
+    ).scalar_one()
+    issued = db.execute(
+        select(func.count(func.distinct(IssuedLedgerORM.concept_cluster_id)))
+        .select_from(IssuedLedgerORM)
+        .join(ConceptClusterORM, IssuedLedgerORM.concept_cluster_id == ConceptClusterORM.id)
+        .join(ConceptCardORM, ConceptClusterORM.representative_card_id == ConceptCardORM.id)
+        .where(
+            IssuedLedgerORM.course_id == course_id,
+            IssuedLedgerORM.is_recycled.is_(False),
+            ConceptCardORM.book_id == book_id,
+        )
+    ).scalar_one()
+    return max(total - issued, 0)
+
+
+def _to_summary(db: Session, problem_set: ProblemSetORM) -> ProblemSetSummary:
+    book_id = _book_id_for_problem_set(db, problem_set)
     return ProblemSetSummary(
         id=problem_set.id,
         course_id=problem_set.course_id,
@@ -87,6 +113,7 @@ def _to_summary(problem_set: ProblemSetORM) -> ProblemSetSummary:
         run_number=problem_set.run_number,
         problem_count=len(problem_set.variant_ids),
         created_at=problem_set.created_at,
+        remaining_concepts=_remaining_concepts(db, problem_set.course_id, book_id),
     )
 
 
@@ -128,7 +155,7 @@ def list_problem_sets(course_id: uuid.UUID, db: Session = Depends(get_db)) -> li
     problem_sets = db.execute(
         select(ProblemSetORM).where(ProblemSetORM.course_id == course_id).order_by(ProblemSetORM.run_number)
     ).scalars().all()
-    return [_to_summary(p) for p in problem_sets]
+    return [_to_summary(db, p) for p in problem_sets]
 
 
 @router.get("/{problem_set_id}", response_model=ProblemSetDetail)
@@ -154,7 +181,7 @@ def get_problem_set(problem_set_id: uuid.UUID, db: Session = Depends(get_db)) ->
                 extension_type=variant.extension_type.value,
             )
         )
-    summary = _to_summary(problem_set)
+    summary = _to_summary(db, problem_set)
     return ProblemSetDetail(**summary.model_dump(), problems=previews)
 
 
