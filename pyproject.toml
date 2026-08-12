@@ -31,6 +31,9 @@ dependencies = [
     "httpx>=0.27",
     "pypdf>=4.2",
     "google-genai>=1.0",
+    "typst>=0.13",  # S10 rendering (render/render.py) - real gap: installed ad hoc in an
+                     # earlier session, never declared here, so a fresh env (a Docker build,
+                     # a new dev venv) never got it and crashed on import at container startup.
 ]
 
 [project.scripts]
@@ -43,6 +46,7 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.5",
     "fpdf2>=2.7",  # tests/fixtures generation only (scripts/make_fixtures.py)
+    "playwright>=1.62",  # tests/test_api_e2e.py's real-browser CORS/connectivity smoke test
 ]
 
 [build-system]

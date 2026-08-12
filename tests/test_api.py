@@ -702,7 +702,38 @@ def test_download_code_zip_contains_real_files(
     assert zf.read("problem_01.py").decode() == "print('hi')"
 
 
-def test_chat_returns_501_stub(client: TestClient, db_session: Session, tmp_path: Path) -> None:
+def test_chat_answers_a_question_about_a_step(
+    client: TestClient, db_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PLUMBING ONLY: `explain_step` itself is monkeypatched, so this
+    proves the route's index validation and response shape, not that any
+    real model gives a good answer -- see test_chat.py for that stage's
+    own (also fake-client) prompt/parsing tests."""
+    course = _make_course(db_session, faculty=None)
+    _book_id, _section_id, cluster_id = _make_book_with_cluster(db_session)
+    variant = _make_variant(db_session, cluster_id)
+    problem_set = _make_rendered_problem_set(db_session, course.id, [variant.id], tmp_path)
+
+    seen_args: dict[str, object] = {}
+
+    def _fake_explain_step(client_arg: object, job_id: str, variant_arg: object, step_index: int, question: str) -> str:
+        seen_args.update(step_index=step_index, question=question)
+        return "Because the process is isentropic, so entropy is constant."
+
+    monkeypatch.setattr("api.routers.problem_sets.explain_step", _fake_explain_step)
+
+    resp = client.post(
+        f"/api/problem-sets/{problem_set.id}/chat",
+        json={"problem_index": 1, "step_index": 1, "question": "why?"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"answer": "Because the process is isentropic, so entropy is constant."}
+    assert seen_args == {"step_index": 1, "question": "why?"}
+
+
+def test_chat_returns_404_for_invalid_problem_index(
+    client: TestClient, db_session: Session, tmp_path: Path
+) -> None:
     course = _make_course(db_session, faculty=None)
     _book_id, _section_id, cluster_id = _make_book_with_cluster(db_session)
     variant = _make_variant(db_session, cluster_id)
@@ -710,9 +741,22 @@ def test_chat_returns_501_stub(client: TestClient, db_session: Session, tmp_path
 
     resp = client.post(
         f"/api/problem-sets/{problem_set.id}/chat",
-        json={"problem_index": 1, "step_index": 0, "question": "why?"},
+        json={"problem_index": 99, "step_index": 1, "question": "why?"},
     )
-    assert resp.status_code == 501
+    assert resp.status_code == 404
+
+
+def test_chat_returns_404_for_invalid_step_index(client: TestClient, db_session: Session, tmp_path: Path) -> None:
+    course = _make_course(db_session, faculty=None)
+    _book_id, _section_id, cluster_id = _make_book_with_cluster(db_session)
+    variant = _make_variant(db_session, cluster_id)  # solution_steps == ["Step one."], length 1
+    problem_set = _make_rendered_problem_set(db_session, course.id, [variant.id], tmp_path)
+
+    resp = client.post(
+        f"/api/problem-sets/{problem_set.id}/chat",
+        json={"problem_index": 1, "step_index": 5, "question": "why?"},
+    )
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------

@@ -22,13 +22,19 @@ from sqlalchemy.orm import Session
 from practice_forge.db.models import BookORM, DisciplineORM, PageORM
 from practice_forge.ingest.extract import PageExtraction, extract_pages, iter_pages, page_count
 from practice_forge.ingest.hashing import sha256_file
-from practice_forge.ingest.metadata import BookMetadata, extract_metadata, metadata_matches
+from practice_forge.ingest.metadata import (
+    BookMetadata,
+    extract_metadata,
+    extract_metadata_llm,
+    metadata_matches,
+)
 from practice_forge.ingest.minhash import (
     build_minhash,
     jaccard,
     list_to_minhash,
     signature_to_list,
 )
+from practice_forge.llm.client import LLMClient
 from practice_forge.models.enums import IngestStatus
 
 JACCARD_DEDUP_THRESHOLD = 0.8
@@ -43,12 +49,27 @@ class IngestResult:
     pages_ingested: int
 
 
+def _extract_metadata_with_fallback(
+    sample_text: str, llm_client: LLMClient | None, job_id: str
+) -> BookMetadata:
+    """The free regex heuristic first; a real LLM call only if that comes
+    back empty (see ingest/metadata.py's module docstring) and a client
+    was actually provided — `llm_client=None` (the default everywhere
+    this was called before this fallback existed) preserves the exact
+    original zero-cost behavior."""
+    metadata = extract_metadata(sample_text)
+    if metadata.title != "Unknown Title" or llm_client is None:
+        return metadata
+    return extract_metadata_llm(llm_client, job_id, sample_text)
+
+
 def run_ingest(
     session: Session,
     pdf_path: Path,
     *,
     discipline_key: str,
     uploaded_by: str,
+    llm_client: LLMClient | None = None,
 ) -> IngestResult:
     discipline = session.execute(
         select(DisciplineORM).where(DisciplineORM.key == discipline_key)
@@ -78,7 +99,9 @@ def run_ingest(
 
     page_count = len(pages)
     sample_texts = [p.markdown for p in pages[:METADATA_SAMPLE_PAGES]]
-    metadata = extract_metadata("\n".join(sample_texts))
+    metadata = _extract_metadata_with_fallback(
+        "\n".join(sample_texts), llm_client, f"ingest-metadata-{file_hash[:12]}"
+    )
     minhash = build_minhash([p.markdown for p in pages])
 
     canonical_match = _find_canonical_match(session, discipline.id, metadata, minhash, page_count)
@@ -156,6 +179,7 @@ def run_ingest_resumable(
     discipline_key: str,
     uploaded_by: str,
     progress_cb: Callable[[int, int], None] | None = None,
+    llm_client: LLMClient | None = None,
 ) -> IngestResult:
     """For the API's async ingest job (`worker/tasks.py`), not the `pf
     ingest` CLI (which stays on `run_ingest` above, unchanged).
@@ -225,7 +249,9 @@ def run_ingest_resumable(
         )
 
     sample_texts = [p.markdown for p in pages[:METADATA_SAMPLE_PAGES]]
-    metadata = extract_metadata("\n".join(sample_texts))
+    metadata = _extract_metadata_with_fallback(
+        "\n".join(sample_texts), llm_client, f"ingest-metadata-{file_hash[:12]}"
+    )
     minhash = build_minhash([p.markdown for p in pages])
 
     canonical_match = _find_canonical_match(session, discipline.id, metadata, minhash, total_pages)
@@ -318,3 +344,37 @@ def _find_canonical_match(
         if jaccard(minhash, candidate_minhash) >= JACCARD_DEDUP_THRESHOLD:
             return candidate.canonical_book_id or candidate.id
     return None
+
+
+def backfill_metadata(session: Session, book_id: uuid.UUID, llm_client: LLMClient) -> BookMetadata:
+    """For books already ingested before `extract_metadata_llm` existed
+    (every one of this project's real full-book ingests, confirmed live —
+    all of them stuck on the free heuristic's "Unknown Title"). Always
+    calls the LLM, regardless of what `book.title` currently says —
+    unlike `_extract_metadata_with_fallback`'s conditional path used
+    during a fresh ingest, a backfill's whole point is to actually spend
+    the one real call and get a real answer. Updates and commits the
+    real `BookORM` row in place; never fabricates a title the model
+    didn't actually find (see `extract_metadata_llm`'s own docstring)."""
+    book = session.get(BookORM, book_id)
+    if book is None:
+        raise ValueError(f"No such book: {book_id}")
+
+    pages = (
+        session.execute(
+            select(PageORM)
+            .where(PageORM.book_id == book_id)
+            .order_by(PageORM.page_no)
+            .limit(METADATA_SAMPLE_PAGES)
+        )
+        .scalars()
+        .all()
+    )
+    sample_text = "\n".join(p.markdown for p in pages)
+    metadata = extract_metadata_llm(llm_client, f"backfill-metadata-{book_id}", sample_text)
+
+    book.title = metadata.title
+    book.authors = metadata.authors
+    book.edition = metadata.edition
+    session.commit()
+    return metadata

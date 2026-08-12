@@ -69,6 +69,16 @@ services:
       REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
+    # Neither this nor `worker` had ANY volume for data/ before -- confirmed
+    # live: PDF downloads 500'd with "File ... does not exist" because
+    # worker writes generated PDFs/uploads to its OWN container filesystem
+    # (or, for anything run via the host `pf` CLI, to a Windows host path),
+    # which this container can never see without a shared mount. Same host
+    # dir the `pf` CLI already uses (REPO_ROOT/data), so files created any
+    # of the three ways (host CLI, worker container, api container) land in
+    # one place all three can read.
+    volumes:
+      - ./data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -84,6 +94,8 @@ services:
       DATABASE_URL: postgresql+psycopg://practice_forge:practice_forge@db:5432/practice_forge
       REDIS_URL: redis://redis:6379/0
       SANDBOX_RUNNER_URL: http://sandbox-runner:9000
+    volumes:
+      - ./data:/app/data
     depends_on:
       db:
         condition: service_healthy

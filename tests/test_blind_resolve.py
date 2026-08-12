@@ -9,6 +9,12 @@ The collision test proves `run_blind_resolve` refuses to call the LLM at
 all when config/llm_routing.yaml routes it to the same (provider, model)
 as `s9_codegen` — see blind_resolve.py's module docstring for why that's
 enforced, not just documented.
+
+The JSON-parsing tests below are PLUMBING ONLY — every LLM response is a
+hand-written fake string, not a real model call, so they prove
+`_parse_json_answers`/`run_blind_resolve`'s retry logic handles the shapes
+we've actually seen live (long derivations, markdown fences, malformed
+JSON), not that any particular model will comply with the prompt.
 """
 
 from __future__ import annotations
@@ -22,7 +28,9 @@ from practice_forge.llm.client import LLMClient
 from practice_forge.llm.routing import RateLimitConfig, RoutingConfig, StageRoute
 from practice_forge.models.enums import DifficultyLevel, ExtensionType, VerificationStatus
 from practice_forge.verification.blind_resolve import (
+    BlindAnswerValue,
     BlindResolveModelCollisionError,
+    BlindResolveParseError,
     build_blind_resolve_prompt,
     run_blind_resolve,
 )
@@ -88,8 +96,8 @@ def test_blind_resolve_refuses_to_call_llm_when_routed_to_same_model_as_codegen(
         run_blind_resolve(LLMClient.__new__(LLMClient), "job-1", variant)
 
 
-def test_blind_resolve_calls_llm_when_routed_to_a_different_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    distinct_routing = RoutingConfig(
+def _distinct_routing() -> RoutingConfig:
+    return RoutingConfig(
         stages={
             "s9_codegen": StageRoute(provider="gemini", model="gemini-flash-lite-latest"),
             "s9_blind_resolve": StageRoute(provider="gemini", model="gemini-flash-latest"),
@@ -101,26 +109,110 @@ def test_blind_resolve_calls_llm_when_routed_to_a_different_model(monkeypatch: p
             }
         },
     )
+
+
+class _FakeResponse:
+    def __init__(self, text: str, model: str = "gemini-flash-latest") -> None:
+        self.text = text
+        self.provider = "gemini"
+        self.model = model
+
+
+def test_blind_resolve_calls_llm_when_routed_to_a_different_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "practice_forge.verification.blind_resolve.load_routing", lambda: distinct_routing
+        "practice_forge.verification.blind_resolve.load_routing", lambda: _distinct_routing()
     )
 
-    calls: list[str] = []
+    calls: list[tuple[str, int]] = []
 
     class _FakeClient:
-        def complete(self, *, stage: str, prompt: str, job_id: str, **kwargs: object) -> object:
-            calls.append(stage)
-
-            class _Response:
-                text = "ANSWER t2: 450.0 K"
-                provider = "gemini"
-                model = "gemini-flash-latest"
-
-            return _Response()
+        def complete(self, *, stage: str, prompt: str, job_id: str, max_tokens: int, **kwargs: object) -> object:
+            calls.append((stage, max_tokens))
+            return _FakeResponse('{"t2": {"value": 450.0, "unit": "K"}}')
 
     variant = _make_variant()
     result = run_blind_resolve(_FakeClient(), "job-1", variant)  # type: ignore[arg-type]
 
-    assert calls == ["s9_blind_resolve"]
-    assert result.raw_text == "ANSWER t2: 450.0 K"
+    assert calls == [("s9_blind_resolve", 4096)]
+    assert result.raw_text == '{"t2": {"value": 450.0, "unit": "K"}}'
+    assert result.answers == {"t2": BlindAnswerValue(value=450.0, unit="K")}
     assert result.model == "gemini-flash-latest"
+
+
+def test_blind_resolve_parses_json_after_a_long_derivation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deliberately long derivation (thousands of characters of LaTeX/
+    prose, the shape real responses actually took before v2's stricter
+    prompt) preceding the trailing JSON block -- proves our own parsing
+    finds the real answer regardless of how much reasoning came before it,
+    and that max_tokens=4096 (not the old 1024) is what's actually sent, so
+    a real long derivation isn't truncated before reaching its answer."""
+    monkeypatch.setattr(
+        "practice_forge.verification.blind_resolve.load_routing", lambda: _distinct_routing()
+    )
+    long_derivation = "We analyze the four processes of the cycle.\n" + ("T_1 = 300 K, P_1 = 100 kPa. " * 300)
+    response_text = long_derivation + '\n\n{"net_work": {"value": 300.75, "unit": "kJ"}}'
+    assert len(response_text) > 4000  # the derivation really is long, not a token-count fake-out
+
+    seen_max_tokens: list[int] = []
+
+    class _FakeClient:
+        def complete(self, *, stage: str, prompt: str, job_id: str, max_tokens: int, **kwargs: object) -> object:
+            seen_max_tokens.append(max_tokens)
+            return _FakeResponse(response_text)
+
+    variant = _make_variant()
+    result = run_blind_resolve(_FakeClient(), "job-1", variant)  # type: ignore[arg-type]
+
+    assert seen_max_tokens == [4096]
+    assert result.answers == {"net_work": BlindAnswerValue(value=300.75, unit="kJ")}
+
+
+def test_blind_resolve_tolerates_a_markdown_json_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "practice_forge.verification.blind_resolve.load_routing", lambda: _distinct_routing()
+    )
+
+    class _FakeClient:
+        def complete(self, *, stage: str, prompt: str, job_id: str, **kwargs: object) -> object:
+            return _FakeResponse('```json\n{"t2": {"value": 450.0, "unit": "K"}}\n```')
+
+    variant = _make_variant()
+    result = run_blind_resolve(_FakeClient(), "job-1", variant)  # type: ignore[arg-type]
+    assert result.answers == {"t2": BlindAnswerValue(value=450.0, unit="K")}
+
+
+def test_blind_resolve_retries_once_on_invalid_json_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "practice_forge.verification.blind_resolve.load_routing", lambda: _distinct_routing()
+    )
+
+    responses = [
+        _FakeResponse("t2 is approximately 450 K, no JSON here"),
+        _FakeResponse('{"t2": {"value": 450.0, "unit": "K"}}'),
+    ]
+    calls: list[str] = []
+
+    class _FakeClient:
+        def complete(self, *, stage: str, prompt: str, job_id: str, **kwargs: object) -> object:
+            calls.append(job_id)
+            return responses[len(calls) - 1]
+
+    variant = _make_variant()
+    result = run_blind_resolve(_FakeClient(), "job-1", variant)  # type: ignore[arg-type]
+
+    assert calls == ["job-1-attempt1", "job-1-attempt2"]
+    assert result.answers == {"t2": BlindAnswerValue(value=450.0, unit="K")}
+
+
+def test_blind_resolve_raises_after_two_invalid_json_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "practice_forge.verification.blind_resolve.load_routing", lambda: _distinct_routing()
+    )
+
+    class _FakeClient:
+        def complete(self, *, stage: str, prompt: str, job_id: str, **kwargs: object) -> object:
+            return _FakeResponse("no JSON in this response at all")
+
+    variant = _make_variant()
+    with pytest.raises(BlindResolveParseError):
+        run_blind_resolve(_FakeClient(), "job-1", variant)  # type: ignore[arg-type]

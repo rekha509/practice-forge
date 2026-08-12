@@ -1,0 +1,70 @@
+# Render Blueprint (P13). Deploys web + api on Render, backed by Render's
+# own managed Postgres (pgvector-enabled) and Key Value (Redis). worker +
+# sandbox-runner deliberately are NOT here -- Render doesn't support
+# Docker-socket access from within a service, which the sandbox needs to
+# actually execute/verify generated code, so they keep running on the
+# original machine, pointed at these same databases over their external
+# connection URLs. See docs/deployment.md for the full setup, including
+# why this split exists and how to migrate off it later if you get a real
+# VPS instead.
+
+databases:
+  - name: practice-forge-db
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: keyvalue
+    name: practice-forge-redis
+    plan: free
+    ipAllowList: [] # tightened per docs/deployment.md once you know your worker machine's IP
+
+  - type: web
+    name: practice-forge-api
+    runtime: docker
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: practice-forge-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: practice-forge-redis
+          property: connectionString
+      - key: CORS_ALLOW_ORIGINS
+        # Render has no blueprint property for "another service's own
+        # public URL" (only its own via RENDER_EXTERNAL_URL, and `host`/
+        # `hostport` are the INTERNAL network address, not the public
+        # one) -- this is the real, predictable public URL Render gives
+        # practice-forge-web by its documented onrender.com naming
+        # convention. Update this if you ever rename that service or add
+        # a custom domain to it.
+        value: https://practice-forge-web.onrender.com
+      - key: GEMINI_API_KEY
+        sync: false # set manually in the Render dashboard, never committed
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  - type: web
+    name: practice-forge-web
+    runtime: docker
+    dockerfilePath: ./docker/web/Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      - key: API_PROXY_HOST
+        # `hostport` (not `host` alone) -- this is the real internal
+        # network address, "name:port", confirmed against Render's own
+        # blueprint spec docs; `host` alone omits the port. next.config.ts
+        # prepends "http://" itself -- see its own comment for why this
+        # env var is host:port, not a full URL.
+        fromService:
+          type: web
+          name: practice-forge-api
+          property: hostport
+      - key: NODE_ENV
+        value: production

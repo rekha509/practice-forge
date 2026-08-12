@@ -1,0 +1,45 @@
+# P13: production profile. Same real services as docker-compose.yml (db,
+# redis, sandbox-base/-runner, api, worker) plus a production `web`
+# service running the actual compiled Next.js app (`next start`'s
+# standalone output, see docker/web/Dockerfile) instead of `next dev` +
+# a separate host-run cloudflared quick tunnel.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml
+#   up -d --build
+# (layers on top of the base file rather than duplicating db/redis/
+# sandbox -- those are identical in both profiles.)
+
+services:
+  api:
+    environment:
+      # Real deployment target's own origin(s) -- comma-separated, e.g.
+      # https://yourdomain.example. Left unset here on purpose: this repo
+      # doesn't know your real domain, so this MUST be set in the actual
+      # deploy environment, not hardcoded. See api/main.py's docstring.
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+    # NOTE: compose merges `ports` by appending, not replacing -- an empty
+    # override list here does NOT remove the base file's ":8000:8000"
+    # mapping (confirmed live via `docker compose ... config`). Only the
+    # tunnel (docs/deployment.md) is meant to be the real public entry
+    # point; the host port stays mapped for now as a pragmatic default,
+    # not because it's meant to be internet-facing directly. Firewall it
+    # off at the host/network level for a real deployment if that matters
+    # to you -- compose's own override mechanics can't express "remove"
+    # here without restructuring the base file's service definition.
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    environment:
+      # "api" is this compose network's real DNS name for the api
+      # service -- "localhost" (the dev-profile default in
+      # web/next.config.ts) means something different inside this
+      # container and would not reach it.
+      API_PROXY_HOST: api:8000
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started

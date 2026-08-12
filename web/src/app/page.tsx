@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { BookOpen } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -72,9 +73,10 @@ export default function LibraryPage() {
       )}
 
       {books !== null && books.length === 0 && (
-        <p className="mt-16 text-center text-sm text-muted-foreground">
-          No textbooks yet. Add one to get started.
-        </p>
+        <div className="mt-16 flex flex-col items-center gap-2 text-center">
+          <BookOpen className="size-8 text-muted-foreground/50" aria-hidden="true" />
+          <p className="text-sm text-muted-foreground">No textbooks yet. Add one to get started.</p>
+        </div>
       )}
 
       {books !== null && books.length > 0 && (
@@ -83,11 +85,18 @@ export default function LibraryPage() {
             const ready = book.ingest_status === "done";
             const card = (
               <Card
-                className={ready ? "transition-colors hover:border-primary" : "opacity-70"}
+                className={
+                  ready
+                    ? "border-t-2 border-t-primary shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+                    : "border-t-2 border-t-transparent opacity-70"
+                }
               >
                 <CardHeader>
                   <div className="flex items-start justify-between gap-2">
-                    <CardTitle className="text-base leading-snug">{book.title}</CardTitle>
+                    <CardTitle className="flex items-start gap-2 text-base leading-snug">
+                      <BookOpen className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+                      {book.title}
+                    </CardTitle>
                     <Badge variant={statusVariant(book.ingest_status)} className="shrink-0">
                       {book.ingest_status}
                     </Badge>

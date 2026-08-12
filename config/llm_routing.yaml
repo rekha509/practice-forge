@@ -21,6 +21,13 @@
 # thing for this model/field; only omitted works.
 
 stages:
+  s1_metadata:
+    provider: gemini
+    # Fallback only — extract_metadata's free regex heuristic runs first;
+    # this only fires when that comes back "Unknown Title" (confirmed
+    # live: every one of this project's real full-book ingests). Schema-
+    # bound extraction, same tier as s2/s3/s5/s6.
+    model: gemini-flash-lite-latest
   s2_structure:
     provider: gemini
     model: gemini-flash-lite-latest
@@ -58,30 +65,34 @@ stages:
     model: gemini-flash-lite-latest
   s8_variant_generation:
     provider: gemini
-    # TEMPORARY, 2026-08-10: flash-latest's real 20/day cap was already
-    # spent today (23 used) by the pre-fix S5 distillation run earlier
-    # this same session, before it existed to reserve. Standing policy is
-    # still gemini-flash-latest (see below) — this is a same-day quota
-    # workaround to get a real verified answer today as explicitly
-    # requested, not a reversal of that policy. Revert to
-    # gemini-flash-latest once flash-latest's quota resets (UTC).
-    model: gemini-flash-lite-latest
-    # Deliberately reserved on gemini-flash-latest normally, not just
-    # defaulted here: S8/S9 are the two stages where reasoning quality
-    # directly decides correctness (a wrong-but-plausible variant or a
+    # REVERTED to the standing policy 2026-08-11 (flash-latest's daily
+    # quota reset; confirmed live via data/llm_rate_limit_state.json
+    # showing zero gemini-flash-latest requests recorded for today before
+    # this session's real re-verification batch). The 2026-08-10 same-day
+    # workaround (gemini-flash-lite-latest) is over — this and s9_codegen
+    # are real reasoning stages (a wrong-but-plausible variant or a
     # subtly-wrong generated solution is a real product failure), unlike
-    # S2/S3/S5/S6's schema-bound extraction/classification. No working
-    # free-tier Pro model exists on this account (see above; re-verify
-    # live before ever trusting that finding again — aliases have already
-    # moved once) — Flash with thinking left on is the deepest reasoning
-    # available today, once quota allows using it again.
+    # S2/S3/S5/S6's schema-bound extraction/classification, so they're
+    # deliberately reserved on the strongest available free-tier model,
+    # not just defaulted here. No working free-tier Pro model exists on
+    # this account (re-verify live before ever trusting that finding
+    # again — aliases have already moved once) — Flash with thinking left
+    # on is the deepest reasoning available today.
+    model: gemini-flash-latest
   s9_codegen:
     provider: gemini
-    # TEMPORARY, 2026-08-10 — same same-day quota workaround as
-    # s8_variant_generation above, same revert-when-quota-resets plan.
+    # REVERTED 2026-08-11 — see s8_variant_generation above. Real 20/day
+    # cap confirmed live via a 429 (docs/adr/0006's addendum) — every real
+    # consumer of this stage (pf generate, pf reverify, pf calibrate) now
+    # draws from that same real, tight, shared daily bucket.
+    model: gemini-flash-latest
+  chat_explain_step:
+    provider: gemini
+    # P12 (explain-a-step): a real, synchronous per-request Q&A call, not a
+    # pipeline stage -- deliberately on the high-RPD model so it never
+    # competes with s8/s9/calibrate's tight 20/day gemini-flash-latest
+    # budget (see that stage's own comments on today's manual reservation).
     model: gemini-flash-lite-latest
-    # Same standing reservation (gemini-flash-latest) as
-    # s8_variant_generation above, once quota allows using it again.
   s9_blind_resolve:
     provider: gemini
     # DELIBERATELY the OTHER real Gemini model from s9_codegen's standing
@@ -91,10 +102,9 @@ stages:
     # s9_codegen. 20/20 agreement between a solver and a re-solver on the
     # SAME model measures nothing; the whole point of this stage is a
     # genuinely independent second opinion, so errors don't correlate.
-    # NOTE: while s9_codegen's temporary same-day quota workaround above
-    # has it ALSO on gemini-flash-lite-latest, this stage and s9_codegen
-    # collide until that workaround is reverted — do not run a real blind
-    # re-solve batch until it is.
+    # Now that s9_codegen is back on gemini-flash-latest (see above), this
+    # stage's flash-lite-latest routing is genuinely different again —
+    # the collision guard would fire if that ever changes.
     model: gemini-flash-lite-latest
 
 # RPM figures are conservative published free-tier norms for each tier as of

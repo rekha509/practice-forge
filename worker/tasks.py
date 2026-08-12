@@ -89,6 +89,7 @@ def ingest_task(job_id: str) -> None:
                 discipline_key=job.discipline_key,
                 uploaded_by=str(job.created_by_faculty_id or "api"),
                 progress_cb=on_progress,
+                llm_client=LLMClient(),
             )
         except Exception as exc:
             _fail_job(job, f"{type(exc).__name__}: {exc}")
@@ -214,6 +215,17 @@ def _render_and_persist_problem_set(
 
 
 def _write_ledger(session: Session, *, course_id: uuid.UUID, problem_set: ProblemSetORM) -> None:
+    """One row per `problem_set.variant_ids` entry -- confirmed correct for
+    that (real, live-tested): a target that failed S8/S9 is never in
+    `variant_ids` to begin with (see `_generate_variants`'s own docstring),
+    so a smaller-than-requested set here means fewer targets succeeded, not
+    a dropped ledger write.
+
+    `is_recycled` WAS hardcoded False here, contradicting IssuedLedgerORM's
+    own docstring ("Denormalized from Variant.is_recycled at write time") --
+    currently harmless since nothing in this codebase ever sets
+    Variant.is_recycled True yet, but real drift from the documented
+    contract nonetheless. Reads the real value off each variant instead."""
     now = _now()
     for variant_id in problem_set.variant_ids:
         variant = session.get(VariantORM, variant_id)
@@ -226,7 +238,7 @@ def _write_ledger(session: Session, *, course_id: uuid.UUID, problem_set: Proble
                 variant_id=variant_id,
                 problem_set_id=problem_set.id,
                 issued_at=now,
-                is_recycled=False,
+                is_recycled=variant.is_recycled,
             )
         )
     session.commit()

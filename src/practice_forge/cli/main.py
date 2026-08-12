@@ -21,7 +21,7 @@ from practice_forge.db.models import BookORM, DisciplineORM, SourceProblemORM, V
 from practice_forge.detection.detection import make_default_batch_confirm_fn
 from practice_forge.detection.detection import run_detection as run_detection_
 from practice_forge.figures.figures import run_figure_descope
-from practice_forge.ingest.pipeline import run_ingest
+from practice_forge.ingest.pipeline import backfill_metadata, run_ingest
 from practice_forge.llm.client import LLMClient
 from practice_forge.models.enums import VerificationStatus
 from practice_forge.profiles.loader import list_profiles, load_profile
@@ -112,12 +112,24 @@ def ingest(
             pdf_path,
             discipline_key=discipline,
             uploaded_by=uploaded_by or getpass.getuser(),
+            llm_client=LLMClient(),
         )
 
     if result.dedup_hit:
         typer.echo(f"dedup hit ({result.dedup_hit}) - reusing book_id={result.book_id}")
     else:
         typer.echo(f"ingested book_id={result.book_id}, {result.pages_ingested} pages")
+
+
+@app.command("backfill-metadata")
+def backfill_metadata_cmd(book_id: str) -> None:
+    """Real LLM call over an already-ingested book's first pages to
+    replace a stuck 'Unknown Title' with a real one — for books ingested
+    before extract_metadata_llm existed (every real full-book ingest this
+    project has done so far, confirmed live)."""
+    with session_scope() as session:
+        metadata = backfill_metadata(session, uuid.UUID(book_id), LLMClient())
+    typer.echo(f"title={metadata.title!r} authors={metadata.authors} edition={metadata.edition!r}")
 
 
 @app.command()

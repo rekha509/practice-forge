@@ -67,7 +67,14 @@ export interface UploadProgress {
   totalBytes: number;
 }
 
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MiB
+// Measured live through the cloudflared tunnel: real upload throughput is
+// ~20 KB/s (a bandwidth ceiling, not a round-trip-count problem -- a 1MiB
+// chunk alone took 51s). At that rate NO chunk size makes the total
+// transfer fast; larger chunks just make a single failed/timed-out chunk
+// throw away more already-transferred progress. Kept small so a bad chunk
+// is cheap to retry, not to reduce round trips (that tradeoff assumed
+// latency was the bottleneck, which turned out false).
+const CHUNK_SIZE = 1 * 1024 * 1024; // 1 MiB
 
 /** Resumable chunked upload (tus-core-subset — see api/routers/books.py).
  * Returns the ingest job_id once the whole file has been transferred and
@@ -153,6 +160,16 @@ export function newSetFromProblemSet(
     method: "POST",
     body: JSON.stringify(req),
     token,
+  });
+}
+
+export function chatAboutStep(
+  problemSetId: string,
+  req: { problem_index: number; step_index: number; question: string }
+): Promise<{ answer: string }> {
+  return request(`/api/problem-sets/${problemSetId}/chat`, {
+    method: "POST",
+    body: JSON.stringify(req),
   });
 }
 

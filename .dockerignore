@@ -1,0 +1,12 @@
+# Keeps the build context small for every Dockerfile in this repo (api,
+# worker, sandbox, web) -- none of these need the host's own installed
+# deps, generated output, or real user data copied into the daemon.
+.venv
+.git
+.pytest_cache
+.next
+web/node_modules
+web/.next
+data
+*.pyc
+__pycache__

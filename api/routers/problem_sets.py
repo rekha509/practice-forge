@@ -1,10 +1,14 @@
-"""Generate / reshuffle / new-set / downloads / chat-stub.
+"""Generate / reshuffle / new-set / downloads / chat.
 
 Every generation is a Celery job — this router only ever enqueues and
 returns a `job_id` (per spec: "Never block an HTTP request on marker or
 on S9"). Reshuffle and new-set are mutually distinct actions, not one
 endpoint with a flag (see docs on both routes below and `worker/tasks.py`)
 — the ledger side-effect is the load-bearing difference between them.
+
+`/chat` (P12, explain-a-step) is the one exception to "never block": it's
+a single short LLM call answering one question, not a bulk pipeline stage
+— see `practice_forge.chat.explain_step`'s module docstring.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from practice_forge.chat.explain_step import StepIndexError, explain_step
 from practice_forge.db.models import (
     ConceptCardORM,
     ConceptClusterORM,
@@ -31,6 +36,8 @@ from practice_forge.db.models import (
     ProblemSetORM,
     VariantORM,
 )
+from practice_forge.llm.client import LLMClient
+from practice_forge.llm.rate_limiter import DailyQuotaExhausted
 from practice_forge.models.enums import JobKind, JobStatus
 from worker.tasks import generate_task, new_set_task, reshuffle_task
 
@@ -302,8 +309,24 @@ def download_code_zip(problem_set_id: uuid.UUID, db: Session = Depends(get_db)) 
 
 
 @router.post("/{problem_set_id}/chat")
-def chat(problem_set_id: uuid.UUID, req: ChatRequest) -> dict[str, str]:
-    """P12 (explain-a-step). Deliberately a stub — real per-step Q&A is
-    out of scope for P10, not silently faked with a canned response."""
-    del problem_set_id, req
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Chat (P12) is not implemented yet")
+def chat(
+    problem_set_id: uuid.UUID, req: ChatRequest, db: Session = Depends(get_db)
+) -> dict[str, str]:
+    """P12: real per-step Q&A -- one synchronous LLM call, see this
+    router's module docstring for why blocking here is fine."""
+    problem_set = _get_problem_set_or_404(db, problem_set_id)
+    if not (1 <= req.problem_index <= len(problem_set.variant_ids)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No problem at index {req.problem_index}")
+    variant = db.get(VariantORM, problem_set.variant_ids[req.problem_index - 1])
+    assert variant is not None
+
+    try:
+        answer = explain_step(
+            LLMClient(), f"chat-{problem_set_id}-{req.problem_index}", variant, req.step_index, req.question
+        )
+    except StepIndexError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except DailyQuotaExhausted as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+    return {"answer": answer}

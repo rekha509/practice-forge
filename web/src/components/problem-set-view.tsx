@@ -6,12 +6,15 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CodeBlock } from "@/components/code-block";
 import { useAuth } from "@/lib/auth";
 import {
   ApiError,
+  chatAboutStep,
   codeZipUrl,
   getProblemSet,
   handoutPdfUrl,
@@ -21,11 +24,18 @@ import {
 } from "@/lib/api";
 import type { ProblemSetDetail } from "@/lib/types";
 
+type StepChatState = { question: string; answer: string | null; error: string | null; loading: boolean };
+const EMPTY_CHAT: StepChatState = { question: "", answer: null, error: null, loading: false };
+function stepKey(problemIndex: number, stepIndex: number): string {
+  return `${problemIndex}:${stepIndex}`;
+}
+
 export function ProblemSetView({ problemSetId }: { problemSetId: string }) {
   const router = useRouter();
   const { token } = useAuth();
   const [detail, setDetail] = useState<ProblemSetDetail | null>(null);
   const [busy, setBusy] = useState<"reshuffle" | "new-set" | null>(null);
+  const [stepChats, setStepChats] = useState<Record<string, StepChatState>>({});
 
   const load = useCallback(() => {
     getProblemSet(problemSetId).then(setDetail);
@@ -72,6 +82,31 @@ export function ProblemSetView({ problemSetId }: { problemSetId: string }) {
         description: err instanceof ApiError ? err.message : String(err),
       });
       setBusy(null);
+    }
+  }
+
+  function updateChat(problemIndex: number, stepIndex: number, patch: Partial<StepChatState>) {
+    const key = stepKey(problemIndex, stepIndex);
+    setStepChats((prev) => ({ ...prev, [key]: { ...(prev[key] ?? EMPTY_CHAT), ...patch } }));
+  }
+
+  async function handleAskAboutStep(problemIndex: number, stepIndex: number) {
+    const key = stepKey(problemIndex, stepIndex);
+    const question = (stepChats[key] ?? EMPTY_CHAT).question.trim();
+    if (!question) return;
+    updateChat(problemIndex, stepIndex, { loading: true, error: null, answer: null });
+    try {
+      const { answer } = await chatAboutStep(problemSetId, {
+        problem_index: problemIndex,
+        step_index: stepIndex,
+        question,
+      });
+      updateChat(problemIndex, stepIndex, { loading: false, answer });
+    } catch (err) {
+      updateChat(problemIndex, stepIndex, {
+        loading: false,
+        error: err instanceof ApiError ? err.message : String(err),
+      });
     }
   }
 
@@ -174,20 +209,58 @@ export function ProblemSetView({ problemSetId }: { problemSetId: string }) {
             <div className="mt-6">
               <h3 className="text-sm font-medium">Solution</h3>
               <ol className="mt-2 space-y-3">
-                {problem.solution_steps.map((step, i) => (
-                  <li key={i} className="flex items-start justify-between gap-3">
-                    <span className="statement-prose whitespace-pre-wrap text-sm">{step}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled
-                      title="Step explanations arrive with the assistant (P12), not yet available"
-                      className="shrink-0 text-xs text-muted-foreground"
-                    >
-                      Explain this
-                    </Button>
-                  </li>
-                ))}
+                {problem.solution_steps.map((step, i) => {
+                  const stepIndex = i + 1;
+                  const chat = stepChats[stepKey(problem.index, stepIndex)] ?? EMPTY_CHAT;
+                  return (
+                    <li key={i} className="flex items-start justify-between gap-3">
+                      <span className="statement-prose whitespace-pre-wrap text-sm">{step}</span>
+                      <Popover>
+                        <PopoverTrigger
+                          render={
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="shrink-0 text-xs text-muted-foreground"
+                            />
+                          }
+                        >
+                          Explain this
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-80">
+                          <div className="space-y-3">
+                            <p className="text-sm font-medium">Ask about this step</p>
+                            <form
+                              className="flex gap-2"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                handleAskAboutStep(problem.index, stepIndex);
+                              }}
+                            >
+                              <Input
+                                value={chat.question}
+                                onChange={(e) =>
+                                  updateChat(problem.index, stepIndex, { question: e.target.value })
+                                }
+                                placeholder="Why this step?"
+                                className="text-sm"
+                              />
+                              <Button type="submit" size="sm" disabled={chat.loading || !chat.question.trim()}>
+                                {chat.loading ? "Asking…" : "Ask"}
+                              </Button>
+                            </form>
+                            {chat.answer && (
+                              <p className="statement-prose whitespace-pre-wrap text-sm">{chat.answer}</p>
+                            )}
+                            {chat.error && (
+                              <p className="text-sm text-destructive">{chat.error}</p>
+                            )}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </li>
+                  );
+                })}
               </ol>
             </div>
 
