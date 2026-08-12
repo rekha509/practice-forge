@@ -1,17 +1,18 @@
-# Render Blueprint (P13). Deploys web + api on Render, backed by Render's
-# own managed Postgres (pgvector-enabled) and Key Value (Redis). worker +
-# sandbox-runner deliberately are NOT here -- Render doesn't support
-# Docker-socket access from within a service, which the sandbox needs to
-# actually execute/verify generated code, so they keep running on the
-# original machine, pointed at these same databases over their external
-# connection URLs. See docs/deployment.md for the full setup, including
-# why this split exists and how to migrate off it later if you get a real
-# VPS instead.
-
-databases:
-  - name: practice-forge-db
-    plan: free
-    postgresMajorVersion: "16"
+# Render Blueprint (P13). Deploys web + api on Render, backed by Neon
+# (Postgres + pgvector, real free tier) and Render's own Key Value
+# (Redis). worker + sandbox-runner deliberately are NOT here -- Render
+# doesn't support Docker-socket access from within a service, which the
+# sandbox needs to actually execute/verify generated code, so they keep
+# running on the original machine, pointed at Neon/Redis's own external
+# connection URLs. See docs/deployment.md for the full setup.
+#
+# DATABASE_URL is NOT provisioned by this blueprint on purpose: Render
+# caps free accounts at ONE active free Postgres instance -- confirmed
+# live, twice, via a real "cannot have more than one active free tier
+# database" failure that canceled the whole deploy. Neon's free tier
+# supports pgvector on every plan with no separate account-slot limit, so
+# DATABASE_URL is a manually-set secret (like the API keys below), not a
+# `databases:` block here.
 
 services:
   - type: keyvalue
@@ -27,9 +28,7 @@ services:
     plan: free
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: practice-forge-db
-          property: connectionString
+        sync: false # set to your real Neon connection string in the Render dashboard
       - key: REDIS_URL
         fromService:
           type: keyvalue
